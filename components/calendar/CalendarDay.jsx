@@ -37,7 +37,8 @@ export function CalendarDay({ date, isCurrentMonth, isToday, events = [], classN
             )}
             title={event.title}
           >
-            {event.title}
+            <div className="font-semibold">{event.title}</div>
+            <div className="text-[10px] opacity-90">{event.timeRange}</div>
           </div>
         ))}
       </div>

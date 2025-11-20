@@ -16,7 +16,7 @@ import { CalendarHeader } from "./CalendarHeader";
 import { CalendarDay } from "./CalendarDay";
 import { Events } from "./Events";
 
-export function Calendar() {
+export function Calendar({ username }) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const todayRef = useRef(null);
   const gridRef = useRef(null);
@@ -76,7 +76,7 @@ export function Calendar() {
         onToday={goToToday}
       />
 
-      <Events currentDate={currentDate}>
+      <Events currentDate={currentDate} username={username}>
         {({ getEventsForDay }) => (
           <div className="flex flex-col border rounded-lg overflow-hidden bg-muted flex-1 min-h-0">
             {/* Sticky weekday headers */}

@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     message: str
     username: str
     history: List[Message] = []
+    participants: List[str] = []
 
 class ChatResponse(BaseModel):
     response: str
@@ -56,7 +57,8 @@ async def chat_endpoint(request: ChatRequest):
         # Prepare state
         initial_state = {
             "messages": langchain_messages,
-            "username": request.username
+            "username": request.username,
+            "participants": request.participants
         }
         
         # Invoke the agent

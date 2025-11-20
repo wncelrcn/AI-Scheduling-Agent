@@ -3,10 +3,21 @@
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { createClient } from "@/utils/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Calendar } from "@/components/calendar/Calendar";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useEffect, useState, useRef } from "react";
 
 export default function Dashboard() {
@@ -18,6 +29,29 @@ export default function Dashboard() {
   const [isProcessing, setIsProcessing] = useState(false);
   const scrollRef = useRef(null);
 
+  // Settings State
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [workStart, setWorkStart] = useState("09:00");
+  const [workEnd, setWorkEnd] = useState("17:00");
+  const [workingDays, setWorkingDays] = useState([
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+  ]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+
+  // Participants State
+  const [availableUsers, setAvailableUsers] = useState([]);
+  const [selectedParticipants, setSelectedParticipants] = useState([]);
+  const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
+
+  const daysOfWeek = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  const supabase = createClient();
+
   useEffect(() => {
     // Check if user is logged in, redirect if not
     const storedUsername = sessionStorage.getItem("username");
@@ -25,8 +59,124 @@ export default function Dashboard() {
       router.push("/");
     } else {
       setUsername(storedUsername);
+      fetchUserPreferences(storedUsername);
+      fetchAvailableUsers(storedUsername);
     }
   }, [router]);
+
+  const fetchAvailableUsers = async (currentUser) => {
+    try {
+      const { data, error } = await supabase
+        .from("users")
+        .select("name, work_start, work_end, working_days")
+        .neq("name", currentUser); // Don't show self in list
+
+      if (data) {
+        setAvailableUsers(data);
+      }
+    } catch (err) {
+      console.error("Error fetching users:", err);
+    }
+  };
+
+  const fetchUserPreferences = async (user) => {
+    try {
+      const { data, error } = await supabase
+        .from("users")
+        .select("work_start, work_end, working_days")
+        .eq("name", user)
+        .single();
+
+      if (data) {
+        if (data.work_start) {
+          // Parse timetz string (e.g., "09:00:00+08") back to HH:MM
+          const timePart = data.work_start.split("+")[0].split("-")[0]; // Handle + or - offset
+          const [h, m] = timePart.split(":");
+          setWorkStart(`${h}:${m}`);
+        }
+        if (data.work_end) {
+          const timePart = data.work_end.split("+")[0].split("-")[0];
+          const [h, m] = timePart.split(":");
+          setWorkEnd(`${h}:${m}`);
+        }
+        if (data.working_days) {
+          setWorkingDays(data.working_days);
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching preferences:", err);
+    }
+  };
+
+  const handleSavePreferences = async () => {
+    setIsSaving(true);
+    try {
+      // For timetz, we just need the time string + timezone offset
+      // Construct ISO-like time string with offset (e.g., "09:00:00+08")
+
+      const getTimeWithOffset = (timeStr) => {
+        // Get local timezone offset in minutes (e.g., -480 for UTC+8)
+        const offsetMinutes = new Date().getTimezoneOffset();
+        const offsetHours = Math.abs(Math.floor(offsetMinutes / 60));
+        const offsetMins = Math.abs(offsetMinutes % 60);
+        const sign = offsetMinutes > 0 ? "-" : "+"; // In JS, negative offset means ahead of UTC
+
+        const paddedHours = String(offsetHours).padStart(2, "0");
+        const paddedMins = String(offsetMins).padStart(2, "0");
+
+        return `${timeStr}:00${sign}${paddedHours}:${paddedMins}`;
+      };
+
+      const { error } = await supabase.from("users").upsert({
+        name: username,
+        work_start: getTimeWithOffset(workStart),
+        work_end: getTimeWithOffset(workEnd),
+        working_days: workingDays,
+      });
+
+      if (error) throw error;
+      setIsSettingsOpen(false);
+      setShowSuccessModal(true);
+    } catch (err) {
+      console.error("Error saving preferences:", err);
+      alert("Failed to save preferences");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const toggleDay = (day) => {
+    if (workingDays.includes(day)) {
+      setWorkingDays(workingDays.filter((d) => d !== day));
+    } else {
+      // Sort days to keep them in order
+      const newDays = [...workingDays, day];
+      newDays.sort((a, b) => daysOfWeek.indexOf(a) - daysOfWeek.indexOf(b));
+      setWorkingDays(newDays);
+    }
+  };
+
+  const toggleParticipant = (userName) => {
+    if (selectedParticipants.includes(userName)) {
+      setSelectedParticipants(
+        selectedParticipants.filter((p) => p !== userName)
+      );
+    } else {
+      setSelectedParticipants([...selectedParticipants, userName]);
+    }
+  };
+
+  // Helper to format working hours for display
+  const formatWorkingHours = (start, end, days) => {
+    if (!start || !end) return "Hours not set";
+    const timeStr = (time) => {
+      const timePart = time.split("+")[0].split("-")[0];
+      const [h, m] = timePart.split(":");
+      return `${h}:${m}`;
+    };
+    const daysStr = days && days.length > 0 ? days.join(", ") : "No days set";
+    return `${daysStr} • ${timeStr(start)} - ${timeStr(end)}`;
+  };
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -69,6 +219,7 @@ export default function Dashboard() {
           message: userMessage.content,
           username: username,
           history: history,
+          participants: selectedParticipants,
         }),
       });
 
@@ -118,7 +269,10 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex gap-4">
-          <Button variant="outline">Notifications</Button>
+          <Button variant="outline" onClick={() => setIsSettingsOpen(true)}>
+            Set Working Hours
+          </Button>
+          <Button variant="outline">Meeting Alerts</Button>
           <Button onClick={handleLogout} variant="outline">
             Logout
           </Button>
@@ -128,7 +282,7 @@ export default function Dashboard() {
       {/* Main Content - Calendar View */}
       <div className="flex-1 flex items-start justify-center overflow-hidden">
         <div className="w-full max-w-7xl h-full max-h-full">
-          <Calendar />
+          <Calendar username={username} />
         </div>
       </div>
 
@@ -164,6 +318,20 @@ export default function Dashboard() {
               className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth"
               ref={scrollRef}
             >
+              {/* Selected Participants Display in Chat */}
+              {selectedParticipants.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-4 pb-4 border-b">
+                  <span className="text-xs text-muted-foreground self-center mr-2">
+                    Active Participants:
+                  </span>
+                  {selectedParticipants.map((p) => (
+                    <Badge key={p} variant="secondary">
+                      {p}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+
               {messages.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
                   <p>No messages yet. Start a conversation!</p>
@@ -282,6 +450,18 @@ export default function Dashboard() {
                   autoFocus
                 />
                 <Button
+                  variant="outline"
+                  onClick={() => setIsParticipantsOpen(true)}
+                  className="relative"
+                >
+                  Participants
+                  {selectedParticipants.length > 0 && (
+                    <Badge variant="secondary" className="ml-2">
+                      {selectedParticipants.length}
+                    </Badge>
+                  )}
+                </Button>
+                <Button
                   onClick={handleSend}
                   disabled={isProcessing || !inputValue.trim()}
                 >
@@ -296,6 +476,24 @@ export default function Dashboard() {
       {/* Bottom Input Area (Only visible when chat is closed) */}
       {!isChatOpen && (
         <div className="mt-6 pt-4 border-t">
+          {/* Selected Participants Display */}
+          {selectedParticipants.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-3 max-w-4xl mx-auto px-1">
+              <span className="text-xs text-muted-foreground self-center mr-2">
+                Including:
+              </span>
+              {selectedParticipants.map((p) => (
+                <Badge
+                  key={p}
+                  variant="secondary"
+                  className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground transition-colors"
+                  onClick={() => toggleParticipant(p)}
+                >
+                  {p} ×
+                </Badge>
+              ))}
+            </div>
+          )}
           <div className="flex gap-2 max-w-4xl mx-auto">
             <Input
               placeholder="Type your request here (e.g., 'Schedule a meeting with John tomorrow at 2pm')..."
@@ -305,6 +503,18 @@ export default function Dashboard() {
               onKeyDown={handleKeyDown}
             />
             <Button
+              variant="outline"
+              onClick={() => setIsParticipantsOpen(true)}
+              className="relative"
+            >
+              Participants
+              {selectedParticipants.length > 0 && (
+                <Badge variant="secondary" className="ml-2">
+                  {selectedParticipants.length}
+                </Badge>
+              )}
+            </Button>
+            <Button
               onClick={handleSend}
               disabled={isProcessing || !inputValue.trim()}
             >
@@ -313,6 +523,146 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/20 z-50 backdrop-blur-sm animate-in fade-in"
+            onClick={() => setIsSettingsOpen(false)}
+          />
+          <Card className="fixed left-[50%] top-[50%] translate-x-[-50%] translate-y-[-50%] w-full max-w-md z-50 p-6 shadow-xl animate-in zoom-in-95 duration-200">
+            <h2 className="text-xl font-bold mb-4">Working Hours</h2>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Working Days</Label>
+                <div className="flex flex-wrap gap-2">
+                  {daysOfWeek.map((day) => (
+                    <Button
+                      key={day}
+                      variant={
+                        workingDays.includes(day) ? "default" : "outline"
+                      }
+                      size="sm"
+                      onClick={() => toggleDay(day)}
+                      className="h-8 w-10 p-0"
+                    >
+                      {day}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="work-start">Start Time</Label>
+                  <Input
+                    id="work-start"
+                    type="time"
+                    value={workStart}
+                    onChange={(e) => setWorkStart(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="work-end">End Time</Label>
+                  <Input
+                    id="work-end"
+                    type="time"
+                    value={workEnd}
+                    onChange={(e) => setWorkEnd(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 mt-6">
+                <Button
+                  variant="ghost"
+                  onClick={() => setIsSettingsOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={handleSavePreferences} disabled={isSaving}>
+                  {isSaving ? "Saving..." : "Save Changes"}
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </>
+      )}
+
+      {/* Success Modal */}
+      <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Success!</DialogTitle>
+            <DialogDescription>
+              Your working hours have been saved successfully.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end">
+            <Button onClick={() => setShowSuccessModal(false)}>
+              Continue to Dashboard
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Participants Selection Modal */}
+      <Dialog open={isParticipantsOpen} onOpenChange={setIsParticipantsOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Select Participants</DialogTitle>
+            <DialogDescription>
+              Choose who you want to include in the meeting.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto py-4 space-y-4">
+            {availableUsers.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                No other users found.
+              </p>
+            ) : (
+              availableUsers.map((user) => (
+                <div
+                  key={user.name}
+                  className="flex items-start space-x-3 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                >
+                  <Checkbox
+                    id={`user-${user.name}`}
+                    checked={selectedParticipants.includes(user.name)}
+                    onCheckedChange={() => toggleParticipant(user.name)}
+                    className="mt-1"
+                  />
+                  <div className="grid gap-1.5 leading-none">
+                    <Label
+                      htmlFor={`user-${user.name}`}
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                    >
+                      {user.name}
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      {formatWorkingHours(
+                        user.work_start,
+                        user.work_end,
+                        user.working_days
+                      )}
+                    </p>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setIsParticipantsOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={() => setIsParticipantsOpen(false)}>
+              Done ({selectedParticipants.length})
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
