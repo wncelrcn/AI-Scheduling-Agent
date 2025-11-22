@@ -22,6 +22,8 @@ export function Events({ currentDate, username, children }) {
 
       if (data) {
         const formattedEvents = data.map((event) => {
+          // timestamptz strings from Supabase are already ISO formatted with timezone info
+          // new Date() correctly handles them based on local browser time (no manual +8 needed)
           const startDate = new Date(event.start_meeting);
           const endDate = new Date(event.end_meeting);
           return {

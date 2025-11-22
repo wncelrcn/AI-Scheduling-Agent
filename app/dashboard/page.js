@@ -115,16 +115,8 @@ export default function Dashboard() {
       // Construct ISO-like time string with offset (e.g., "09:00:00+08")
 
       const getTimeWithOffset = (timeStr) => {
-        // Get local timezone offset in minutes (e.g., -480 for UTC+8)
-        const offsetMinutes = new Date().getTimezoneOffset();
-        const offsetHours = Math.abs(Math.floor(offsetMinutes / 60));
-        const offsetMins = Math.abs(offsetMinutes % 60);
-        const sign = offsetMinutes > 0 ? "-" : "+"; // In JS, negative offset means ahead of UTC
-
-        const paddedHours = String(offsetHours).padStart(2, "0");
-        const paddedMins = String(offsetMins).padStart(2, "0");
-
-        return `${timeStr}:00${sign}${paddedHours}:${paddedMins}`;
+        // Force UTC+8 (Singapore Time) as requested
+        return `${timeStr}:00+08:00`;
       };
 
       const { error } = await supabase.from("users").upsert({
@@ -449,18 +441,6 @@ export default function Dashboard() {
                   onKeyDown={handleKeyDown}
                   autoFocus
                 />
-                <Button
-                  variant="outline"
-                  onClick={() => setIsParticipantsOpen(true)}
-                  className="relative"
-                >
-                  Participants
-                  {selectedParticipants.length > 0 && (
-                    <Badge variant="secondary" className="ml-2">
-                      {selectedParticipants.length}
-                    </Badge>
-                  )}
-                </Button>
                 <Button
                   onClick={handleSend}
                   disabled={isProcessing || !inputValue.trim()}

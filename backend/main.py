@@ -54,11 +54,17 @@ async def chat_endpoint(request: ChatRequest):
         # Add the current new message
         langchain_messages.append(HumanMessage(content=request.message))
         
-        # Prepare state
+        # Prepare state with new structure
         initial_state = {
             "messages": langchain_messages,
-            "username": request.username,
-            "participants": request.participants
+            "organizer_id": request.username,  # The username is the organizer
+            "participant_ids": request.participants,  # Selected participants from UI
+            "extracted_info": None,
+            "all_calendars": {},
+            "all_working_hours": {},
+            "candidate_slots": [],
+            "proposed_slot": None,
+            "debug_info": []  # Initialize debug log
         }
         
         # Invoke the agent
