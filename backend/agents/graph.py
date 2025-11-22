@@ -86,6 +86,102 @@ def has_conflict(existing_meeting: dict, proposed_slot: dict) -> bool:
     overlap_end = min(proposed_slot["end"], existing_meeting["end"])
     return overlap_start < overlap_end
 
+def rank_slots(candidate_slots: List[dict], extracted_info: dict) -> List[dict]:
+    """
+    Rank candidate slots using multi-factor scoring.
+    
+    Scoring priorities:
+    1. Preferred Time Match (highest priority)
+    2. Time of Day Quality
+    3. Day Proximity
+    4. Full Attendance
+    
+    Returns slots sorted by score (highest first).
+    """
+    params = extracted_info.get('parameters', {})
+    pref_start_time = parse_time_to_object(params.get('start_time')) if params.get('start_time') else None
+    pref_date_str = params.get('date')
+    pref_date = datetime.strptime(pref_date_str, "%Y-%m-%d").date() if pref_date_str else None
+    
+    ranked_slots = []
+    
+    for slot in candidate_slots:
+        score = 0
+        reasons = []
+        
+        # Parse slot datetime
+        slot_start = datetime.fromisoformat(slot['start'])
+        slot_end = datetime.fromisoformat(slot['end'])
+        slot_start_time = slot_start.time()
+        slot_date = slot_start.date()
+        
+        # 1. Preferred Time Match (highest priority: 0-100 points)
+        if pref_start_time:
+            # Calculate time difference in hours
+            pref_datetime = datetime.combine(slot_date, pref_start_time)
+            
+            # Ensure pref_datetime is timezone-aware to match slot_start
+            if pref_datetime.tzinfo is None:
+                pref_datetime = TIMEZONE.localize(pref_datetime)
+                
+            time_diff_hours = abs((slot_start - pref_datetime).total_seconds() / 3600)
+            
+            if time_diff_hours == 0:
+                score += 100
+                reasons.append("Exact match to preferred time")
+            elif time_diff_hours <= 1:
+                score += 50
+                reasons.append("Within 1 hour of preferred time")
+            elif time_diff_hours <= 2:
+                score += 25
+                reasons.append("Within 2 hours of preferred time")
+        
+        # 2. Time of Day Quality (0-20 points)
+        hour = slot_start_time.hour
+        if 9 <= hour < 11:
+            score += 20
+            reasons.append("Morning slot")
+        elif 11 <= hour < 13:
+            score += 10
+            reasons.append("Late morning")
+        elif 14 <= hour < 16:
+            score += 15
+            reasons.append("Afternoon slot")
+        elif 16 <= hour < 17:
+            score += 5
+            reasons.append("Late afternoon")
+        
+        # 3. Day Proximity (0-30 points)
+        if pref_date:
+            day_diff = abs((slot_date - pref_date).days)
+            if day_diff == 0:
+                score += 30
+                reasons.append("Same day as requested")
+            elif day_diff == 1:
+                score += 20
+                reasons.append("Next day")
+            elif day_diff <= 3:
+                score += 10
+                reasons.append(f"{day_diff} days from requested")
+        
+        # 4. Full Attendance (0-50 points)
+        available_participants = slot.get('available_participants', [])
+        total_expected = slot.get('score', 3)  # Using the existing score field as indicator
+        if total_expected == 3:  # Full attendance
+            score += 50
+            reasons.append("All participants available")
+        
+        # Add scored slot
+        ranked_slot = slot.copy()
+        ranked_slot['ranking_score'] = score
+        ranked_slot['ranking_reasons'] = reasons
+        ranked_slots.append(ranked_slot)
+    
+    # Sort by score (highest first)
+    ranked_slots.sort(key=lambda x: x['ranking_score'], reverse=True)
+    
+    return ranked_slots
+
 # Define Data Models
 class Constraint(BaseModel):
     type: str = Field(description="Type of constraint: 'unavailable' or 'preference'")
@@ -104,10 +200,11 @@ class MeetingParameters(BaseModel):
 
 class MeetingDetails(BaseModel):
     """Extracts meeting details from user input."""
-    intent: str = Field(description="The user's primary intent, e.g., 'schedule_meeting', 'query_availability', 'cancel_meeting', 'chat'.")
+    intent: str = Field(description="The user's primary intent, e.g., 'schedule_meeting', 'query_availability', 'cancel_meeting', 'confirm_schedule', 'chat'.")
     parameters: MeetingParameters = Field(default_factory=MeetingParameters, description="Structured parameters extracted from the conversation.")
     constraints: List[Constraint] = Field(default_factory=list, description="Any constraints mentioned by the user.")
     missing_info: List[str] = Field(default_factory=list, description="List of information needed to fulfill the request but currently missing.")
+    slot_selection: Optional[int] = Field(None, description="Which slot number the user selected (1, 2, 3, etc.) for confirmation")
 
 # Define the state of our agent
 class AgentState(TypedDict):
@@ -126,8 +223,14 @@ class AgentState(TypedDict):
     all_working_hours: Dict[str, dict]  # name -> {working_days: [], start: "09:00", end: "17:00"}
     
     # Computed results
-    candidate_slots: List[dict]
-    proposed_slot: Optional[dict]
+    candidate_slots: List[dict]  # All valid slots from find_slots_node
+    proposed_slots: List[dict]  # Top 3 ranked slots from select_best_slot
+    proposed_slot: Optional[dict]  # Legacy field, kept for compatibility
+    alternatives: Optional[dict]  # Alternative suggestions when no slots found
+    
+    # Meeting proposal tracking
+    proposal_id: Optional[str]  # UUID of created proposal
+    confirmation_status: Optional[str]  # Track confirmation state
     
     # Debug tracking
     debug_info: List[str]
@@ -151,31 +254,69 @@ async def parse_input(state: AgentState):
     current_time_str = current_time.strftime("%Y-%m-%d %H:%M %Z")
     
     parser_prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an intelligent scheduling assistant parser. 
-        Your job is to extract meeting details from the conversation.
+        ("system", """You are an intelligent scheduling assistant parser that handles both new requests and follow-up conversations.
+        
         Current Time: {current_time} (Singapore/Manila Time, UTC+8)
         Organizer: {organizer}
         Participants already selected: {participants}
         
-        Analyze the conversation and extract:
-        1. Intent: What does the user want? (e.g., schedule_meeting, query_availability)
-        2. Parameters: Extract specific values into the structured format. 
-           - Convert relative dates (today, tomorrow) to YYYY-MM-DD based on Current Time.
-           - Convert relative times (2pm, 14:00) to HH:MM (24h).
-           - IMPORTANT: Extract duration from phrases like:
-             * "2 hour meeting" -> duration_minutes: 120
-             * "30 minute meeting" -> duration_minutes: 30
-             * "1 hour meeting" -> duration_minutes: 60
-             * "half hour meeting" -> duration_minutes: 30
-           - If BOTH start_time AND end_time are provided (e.g., "between 2pm and 4pm"), calculate duration_minutes from the difference.
-           - If only duration is mentioned (e.g., "1 hour meeting"), set duration_minutes directly.
-           - Default to 30 minutes if no duration specified.
-        3. Constraints: Any preferences or blockers.
-           - Example: "I'm not available Tuesday mornings" -> type='unavailable', day='Tuesday', start='08:00', end='12:00'
-           - Example: "I prefer afternoons" -> type='preference', start='12:00', end='17:00'
-        4. Missing Info: What is strictly necessary for the intent but missing?
+        IMPORTANT: This is a conversation. Look at the FULL chat history to understand context.
         
-        If the user is just saying hello or chatting, set intent to 'chat'.
+        Analyze the conversation and extract:
+        
+        1. **Intent Detection:**
+           - schedule_meeting: User wants to schedule a new meeting or is revising a request
+           - query_availability: User is asking about availability
+           - confirm_schedule: User is confirming/booking a previously suggested slot
+           - chat: Just chatting or saying hello
+        
+        2. **Confirmation Detection (HIGH PRIORITY):**
+           If the assistant has ALREADY suggested time slots in previous messages, check if user is confirming:
+           - Explicit slot numbers: "book slot 1", "confirm slot 2", "I'll take slot 3"
+           - Natural confirmation: "I'll take the first one", "book the Tuesday meeting", "yes, let's do it", "perfect", "sounds good"
+           - If confirming, set intent to 'confirm_schedule' and extract slot_selection number (1, 2, or 3)
+           - Look at previous assistant messages to see if slots were offered
+        
+        3. **Follow-up Detection:**
+           Check if this is a follow-up to a previous scheduling request:
+           - Alternative selection: "try Tuesday instead", "check next Monday", "what about afternoon"
+           - Constraint revision: "make it 30 minutes", "change to 2pm", "any time works"
+           - If it's a follow-up, look at what parameters were discussed before and update ONLY what changed
+        
+        4. **Parameter Extraction:**
+           - **Slot Selection:** For confirm_schedule intent, extract the slot number (1, 2, or 3)
+             * "book slot 1" → slot_selection: 1
+             * "I'll take the first one" → slot_selection: 1
+             * "let's go with the second option" → slot_selection: 2
+             * "yes" or "sounds good" (without specific number) → slot_selection: 1 (default to first)
+           - **Date:** Convert relative dates (today, tomorrow, Monday, next week) to YYYY-MM-DD
+           - **Time:** Convert times (2pm, 14:00, afternoon) to HH:MM (24h format)
+           - **Duration:** Extract from phrases:
+             * "2 hour meeting" → duration_minutes: 120
+             * "30 minute meeting" → duration_minutes: 30
+             * "1 hour" → duration_minutes: 60
+             * "half hour" → duration_minutes: 30
+             * If start_time AND end_time given, calculate duration
+             * Default: 30 minutes if not specified
+           - **Title:** Extract meeting title/purpose if mentioned
+        
+        5. **Smart Context Awareness:**
+           - If user says "try Tuesday" and duration/time were mentioned before, keep those
+           - If user says "make it 2pm" and date was mentioned before, keep that date
+           - If user picks "slot 1" from suggestions, set intent to confirm_schedule
+           - Preserve unchanged information from earlier in the conversation
+        
+        6. **Missing Info:**
+           What is strictly necessary for the intent but still missing?
+           - For confirm_schedule: No missing info needed (slot confirmation is sufficient)
+        
+        Examples:
+        - "Book slot 1" → intent: confirm_schedule, slot_selection: 1
+        - "I'll take the first one" → intent: confirm_schedule, slot_selection: 1
+        - "Yes, sounds good" (after slots suggested) → intent: confirm_schedule, slot_selection: 1
+        - "Try Tuesday instead" → intent: schedule_meeting, update date to next Tuesday, keep other params
+        - "Make it 30 minutes" → intent: schedule_meeting, update duration only
+        - "What about 2pm?" → intent: schedule_meeting, update start_time only
         """),
         MessagesPlaceholder(variable_name="messages"),
     ])
@@ -195,6 +336,19 @@ async def parse_input(state: AgentState):
         
         extracted_dict = result.model_dump()
         params = extracted_dict.get('parameters', {})
+        
+        # MERGE LOGIC: If confirming, preserve previous parameters (like title) if missing
+        if extracted_dict.get('intent') == 'confirm_schedule':
+            prev_extracted = state.get('extracted_info', {})
+            prev_params = prev_extracted.get('parameters', {})
+            
+            # List of fields to preserve if missing in new params
+            fields_to_preserve = ['title', 'duration_minutes', 'date', 'start_time', 'end_time']
+            
+            for field in fields_to_preserve:
+                if not params.get(field) and prev_params.get(field):
+                    params[field] = prev_params[field]
+                    debug_info.append(f"Preserved {field} from previous state: {params[field]}")
         
         # Post-processing: Calculate duration if both start_time and end_time are provided
         if params.get('start_time') and params.get('end_time') and not params.get('duration_minutes'):
@@ -221,6 +375,219 @@ async def parse_input(state: AgentState):
             "extracted_info": {"error": str(e), "intent": "error", "parameters": {}, "constraints": [], "missing_info": []},
             "debug_info": debug_info
         }
+
+def suggest_next_days(state: AgentState, num_days: int = 5) -> List[dict]:
+    """
+    Search next N working days for available slots.
+    Returns list of {day, time, all_available}.
+    """
+    organizer_id = state.get('organizer_id')
+    participant_ids = state.get('participant_ids', [])
+    all_user_names = [organizer_id] + participant_ids
+    all_calendars = state.get('all_calendars', {})
+    all_working_hours = state.get('all_working_hours', {})
+    extracted_info = state.get('extracted_info', {})
+    params = extracted_info.get('parameters', {})
+    
+    duration_minutes = params.get('duration_minutes', DEFAULT_DURATION_MINUTES)
+    pref_start_time = parse_time_to_object(params.get('start_time')) if params.get('start_time') else None
+    
+    now = datetime.now(TIMEZONE)
+    suggestions = []
+    week_days_map = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    
+    # Calculate common working days
+    common_working_days = None
+    for user_name in all_user_names:
+        user_hours = all_working_hours.get(user_name, {})
+        user_days = set(user_hours.get("working_days", []))
+        if common_working_days is None:
+            common_working_days = user_days
+        else:
+            common_working_days = common_working_days.intersection(user_days)
+    
+    if not common_working_days:
+        return []
+    
+    # Search next days
+    current_date = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    days_searched = 0
+    
+    while len(suggestions) < num_days and days_searched < 14:
+        day_name = week_days_map[current_date.weekday()]
+        
+        if day_name in common_working_days:
+            # Try to find a slot on this day
+            if pref_start_time:
+                slot_start = current_date.replace(hour=pref_start_time.hour, minute=pref_start_time.minute)
+            else:
+                # Default to 10 AM
+                slot_start = current_date.replace(hour=10, minute=0)
+            
+            slot_end = slot_start + timedelta(minutes=duration_minutes)
+            
+            # Check if all users are available
+            all_available = True
+            for user_name in all_user_names:
+                user_calendar = all_calendars.get(user_name, [])
+                for meeting in user_calendar:
+                    if has_conflict(meeting, {"start": slot_start, "end": slot_end}):
+                        all_available = False
+                        break
+                if not all_available:
+                    break
+            
+            suggestions.append({
+                "date": current_date.strftime("%Y-%m-%d"),
+                "day_name": day_name,
+                "start": slot_start.isoformat(),
+                "end": slot_end.isoformat(),
+                "all_available": all_available
+            })
+        
+        current_date += timedelta(days=1)
+        days_searched += 1
+    
+    return suggestions
+
+def suggest_time_adjustments(state: AgentState) -> List[dict]:
+    """
+    Suggest different time windows on the same day.
+    Returns earlier and later alternatives.
+    """
+    extracted_info = state.get('extracted_info', {})
+    params = extracted_info.get('parameters', {})
+    
+    duration_minutes = params.get('duration_minutes', DEFAULT_DURATION_MINUTES)
+    pref_date_str = params.get('date')
+    
+    if not pref_date_str:
+        return []
+    
+    # Parse the requested date
+    try:
+        pref_date = datetime.strptime(pref_date_str, "%Y-%m-%d")
+        pref_date = TIMEZONE.localize(pref_date)
+    except:
+        return []
+    
+    suggestions = []
+    
+    # Suggest earlier times (9 AM, 10 AM)
+    for hour in [9, 10]:
+        slot_start = pref_date.replace(hour=hour, minute=0)
+        slot_end = slot_start + timedelta(minutes=duration_minutes)
+        suggestions.append({
+            "type": "earlier",
+            "start": slot_start.isoformat(),
+            "end": slot_end.isoformat()
+        })
+    
+    # Suggest later times (4 PM, 5 PM)
+    for hour in [16, 17]:
+        slot_start = pref_date.replace(hour=hour, minute=0)
+        slot_end = slot_start + timedelta(minutes=duration_minutes)
+        suggestions.append({
+            "type": "later",
+            "start": slot_start.isoformat(),
+            "end": slot_end.isoformat()
+        })
+    
+    return suggestions
+
+def suggest_partial_attendance(state: AgentState) -> List[dict]:
+    """
+    Find slots where most (but not all) participants are available.
+    Returns slots with list of available and unavailable users.
+    """
+    organizer_id = state.get('organizer_id')
+    participant_ids = state.get('participant_ids', [])
+    all_user_names = [organizer_id] + participant_ids
+    all_calendars = state.get('all_calendars', {})
+    all_working_hours = state.get('all_working_hours', {})
+    extracted_info = state.get('extracted_info', {})
+    params = extracted_info.get('parameters', {})
+    
+    duration_minutes = params.get('duration_minutes', DEFAULT_DURATION_MINUTES)
+    pref_start_time = parse_time_to_object(params.get('start_time')) if params.get('start_time') else time(14, 0)
+    pref_date_str = params.get('date')
+    
+    if not pref_date_str:
+        return []
+    
+    try:
+        pref_date = datetime.strptime(pref_date_str, "%Y-%m-%d")
+        pref_date = TIMEZONE.localize(pref_date)
+    except:
+        return []
+    
+    slot_start = pref_date.replace(hour=pref_start_time.hour, minute=pref_start_time.minute)
+    slot_end = slot_start + timedelta(minutes=duration_minutes)
+    
+    available_users = []
+    unavailable_users = []
+    
+    for user_name in all_user_names:
+        user_calendar = all_calendars.get(user_name, [])
+        is_available = True
+        
+        for meeting in user_calendar:
+            if has_conflict(meeting, {"start": slot_start, "end": slot_end}):
+                is_available = False
+                break
+        
+        if is_available:
+            available_users.append(user_name)
+        else:
+            unavailable_users.append(user_name)
+    
+    if len(available_users) > 0 and len(unavailable_users) > 0:
+        return [{
+            "start": slot_start.isoformat(),
+            "end": slot_end.isoformat(),
+            "available": available_users,
+            "unavailable": unavailable_users,
+            "attendance_rate": len(available_users) / len(all_user_names)
+        }]
+    
+    return []
+
+def suggest_duration_flexibility(state: AgentState) -> List[dict]:
+    """
+    Check if shorter durations would work.
+    Returns suggestions for 30 min, 45 min, 60 min alternatives.
+    """
+    extracted_info = state.get('extracted_info', {})
+    params = extracted_info.get('parameters', {})
+    
+    requested_duration = params.get('duration_minutes', DEFAULT_DURATION_MINUTES)
+    
+    # Only suggest shorter durations
+    shorter_durations = [30, 45, 60]
+    suggestions = []
+    
+    for duration in shorter_durations:
+        if duration < requested_duration:
+            suggestions.append({
+                "duration_minutes": duration,
+                "reduction": requested_duration - duration
+            })
+    
+    return suggestions
+
+def generate_alternatives(state: AgentState) -> dict:
+    """
+    Generate comprehensive alternatives when no perfect slots are found.
+    Returns dict with different types of suggestions.
+    """
+    alternatives = {
+        "next_days": suggest_next_days(state, num_days=3),
+        "time_adjustments": suggest_time_adjustments(state),
+        "partial_attendance": suggest_partial_attendance(state),
+        "duration_flexibility": suggest_duration_flexibility(state)
+    }
+    
+    return alternatives
 
 def normalize_working_days(days: List[str]) -> List[str]:
     """
@@ -388,6 +755,118 @@ async def fetch_working_hours_node(state: AgentState):
             "debug_info": debug_info
         }
 
+# Define the Confirm Schedule Node
+async def confirm_schedule_node(state: AgentState):
+    """
+    Confirm a meeting schedule by creating a proposal in Supabase.
+    Creates meeting_proposals record and participant_responses for all participants.
+    
+    Since proposed_slots may not persist between conversation turns, we need to:
+    1. Check if we need to re-fetch calendars and find slots
+    2. Or ask the user to re-request the meeting
+    """
+    organizer_id = state.get('organizer_id')
+    participant_ids = state.get('participant_ids', [])
+    proposed_slots = state.get('proposed_slots', [])
+    extracted_info = state.get('extracted_info', {})
+    debug_info = state.get('debug_info', [])
+    messages = state.get('messages', [])
+    
+    debug_info.append("=== Confirming Schedule ===")
+    
+    try:
+        # Validate that we have proposed slots to confirm
+        if not proposed_slots:
+            debug_info.append("ERROR: No proposed slots available to confirm")
+            logger.error("confirm_schedule_node called without proposed_slots")
+            logger.info("This may happen if state wasn't persisted between turns")
+            
+            # Return error status - respond node will handle asking user to re-request
+            return {
+                "confirmation_status": "needs_scheduling",
+                "debug_info": debug_info
+            }
+        
+        # Extract slot selection from extracted_info
+        slot_selection = extracted_info.get('slot_selection', 1)
+        if slot_selection is None or slot_selection < 1:
+            slot_selection = 1  # Default to first slot
+        
+        # Validate slot selection is within range
+        if slot_selection > len(proposed_slots):
+            debug_info.append(f"WARNING: Slot {slot_selection} requested but only {len(proposed_slots)} available, using slot 1")
+            slot_selection = 1
+        
+        # Get the selected slot (convert to 0-based index)
+        selected_slot = proposed_slots[slot_selection - 1]
+        
+        debug_info.append(f"Selected slot {slot_selection}: {selected_slot['start']} - {selected_slot['end']}")
+        
+        # Extract meeting details
+        params = extracted_info.get('parameters', {})
+        meeting_title = params.get('title', 'Meeting')
+        reasoning = ', '.join(selected_slot.get('ranking_reasons', ['Best available time']))
+        
+        # Prepare proposal data
+        proposal_data = {
+            "organizer_id": organizer_id,
+            "participant_ids": participant_ids,  # PostgreSQL TEXT[] array
+            "proposed_start": selected_slot['start'],
+            "proposed_end": selected_slot['end'],
+            "meeting_title": meeting_title,
+            "reasoning": reasoning,
+            "status": "pending",
+            "iteration_count": 1
+        }
+        
+        debug_info.append(f"Creating proposal: {meeting_title} from {selected_slot['start']} to {selected_slot['end']}")
+        debug_info.append(f"Participants: {participant_ids}")
+        
+        # Insert into meeting_proposals table
+        proposal_response = supabase.table("meeting_proposals").insert(proposal_data).execute()
+        
+        if not proposal_response.data or len(proposal_response.data) == 0:
+            debug_info.append("ERROR: Failed to create meeting proposal")
+            logger.error("No data returned from meeting_proposals insert")
+            return {
+                "confirmation_status": "error",
+                "debug_info": debug_info
+            }
+        
+        proposal = proposal_response.data[0]
+        proposal_id = proposal.get('proposal_id')
+        
+        debug_info.append(f"✓ Created proposal with ID: {proposal_id}")
+        
+        # Create participant_responses records for each participant
+        participant_responses = []
+        for participant_id in participant_ids:
+            response_data = {
+                "proposal_id": proposal_id,
+                "participant_id": participant_id,
+                "response": "pending"
+            }
+            participant_responses.append(response_data)
+        
+        # Bulk insert participant responses
+        if participant_responses:
+            responses_result = supabase.table("participant_responses").insert(participant_responses).execute()
+            debug_info.append(f"✓ Created {len(participant_responses)} participant response records")
+            logger.info(f"Created participant responses for proposal {proposal_id}")
+        
+        return {
+            "proposal_id": proposal_id,
+            "confirmation_status": "confirmed",
+            "debug_info": debug_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in confirm_schedule_node: {str(e)}", exc_info=True)
+        debug_info.append(f"ERROR in confirm_schedule_node: {str(e)}")
+        return {
+            "confirmation_status": "error",
+            "debug_info": debug_info
+        }
 
 # Define the Find Slots Node
 async def find_slots_node(state: AgentState):
@@ -464,6 +943,26 @@ async def find_slots_node(state: AgentState):
         pref_end_time = parse_time_to_object(params.get('end_time'))
         debug_info.append(f"Preferred end time: {pref_end_time}")
 
+    # EDGE CASE 1: Check if requested time is in the past
+    if params.get('date') and params.get('start_time'):
+        try:
+            date_obj = datetime.strptime(params['date'], "%Y-%m-%d")
+            time_obj = parse_time_to_object(params['start_time'])
+            if time_obj:
+                requested_datetime = TIMEZONE.localize(
+                    datetime.combine(date_obj.date(), time_obj)
+                )
+                
+                if requested_datetime < now:
+                    debug_info.append(f"❌ PAST TIME: Requested {requested_datetime.strftime('%Y-%m-%d %H:%M')} but current time is {now.strftime('%Y-%m-%d %H:%M')}")
+                    # Return empty slots with special flag for respond node
+                    return {
+                        "candidate_slots": [],
+                        "debug_info": debug_info
+                    }
+        except Exception as e:
+            debug_info.append(f"Could not validate past time: {e}")
+
     # 2. Calculate common working days and hours (intersection)
     # Only generate slots on days when ALL users can work
     common_working_days = None
@@ -500,6 +999,41 @@ async def find_slots_node(state: AgentState):
         return {"candidate_slots": [], "debug_info": debug_info}
     
     debug_info.append(f"Common working days: {list(common_working_days)}, hours: {earliest_start}-{latest_end}")
+    
+    # EDGE CASE 2: Check if requested time is before working hours
+    if params.get('start_time') and earliest_start:
+        pref_start = parse_time_to_object(params['start_time'])
+        if pref_start and pref_start < earliest_start:
+            debug_info.append(f"❌ BEFORE WORKING HOURS: Requested {pref_start.strftime('%H:%M')} but earliest working hour is {earliest_start.strftime('%H:%M')}")
+            # Return early - don't generate any slots
+            return {
+                "candidate_slots": [],
+                "debug_info": debug_info
+            }
+    
+    # EDGE CASE 2B: Check if requested time is after working hours
+    if params.get('start_time') and latest_end:
+        pref_start = parse_time_to_object(params['start_time'])
+        if pref_start and pref_start >= latest_end:
+            debug_info.append(f"❌ AFTER WORKING HOURS: Requested {pref_start.strftime('%H:%M')} but latest working hour ends at {latest_end.strftime('%H:%M')}")
+            # Return early - don't generate any slots
+            return {
+                "candidate_slots": [],
+                "debug_info": debug_info
+            }
+    
+    # EDGE CASE 4: Check if requested date is a non-working day
+    if params.get('date') and common_working_days:
+        try:
+            requested_date = datetime.strptime(params['date'], "%Y-%m-%d")
+            requested_day_name = week_days_map[requested_date.weekday()]
+            
+            if requested_day_name not in common_working_days:
+                debug_info.append(f"❌ NON-WORKING DAY: Requested {requested_day_name} but common working days are {list(common_working_days)}")
+                # Continue to generate alternatives for next working days
+                # Don't return early - let alternatives be generated
+        except (ValueError, AttributeError) as e:
+            debug_info.append(f"Could not validate non-working day: {e}")
     
     # 3. Generate Candidate Slots
     candidate_slots = []
@@ -654,99 +1188,621 @@ async def find_slots_node(state: AgentState):
         "debug_info": debug_info
     }
 
-# Define the Simplified Responder Node (For Testing)
+# Define the Select Best Slot Node
+async def select_best_slot(state: AgentState):
+    """
+    Rank candidate slots using multi-factor scoring,
+    or generate alternatives if no slots are found.
+    """
+    candidate_slots = state.get('candidate_slots', [])
+    extracted_info = state.get('extracted_info', {})
+    debug_info = state.get('debug_info', [])
+    
+    debug_info.append(f"\n=== Selecting best slot from {len(candidate_slots)} candidates ===")
+    
+    # Case 1: Good slots found - rank them
+    if candidate_slots:
+        ranked_slots = rank_slots(candidate_slots, extracted_info)
+        top_3 = ranked_slots[:3]
+        
+        debug_info.append(f"Ranked {len(ranked_slots)} slots, selecting top {len(top_3)}")
+        
+        for i, slot in enumerate(top_3, 1):
+            score = slot.get('ranking_score', 0)
+            reasons = slot.get('ranking_reasons', [])
+            start_dt = datetime.fromisoformat(slot['start'])
+            debug_info.append(f"  {i}. Score {score}: {start_dt.strftime('%Y-%m-%d %H:%M')} - {', '.join(reasons)}")
+        
+        return {
+            "proposed_slots": top_3,
+            "alternatives": None,
+            "debug_info": debug_info
+        }
+    
+    # Case 2: No slots found - generate alternatives
+    else:
+        debug_info.append("No perfect slots found, generating alternatives...")
+        alternatives = generate_alternatives(state)
+        
+        # Count alternatives
+        next_days_count = len(alternatives.get('next_days', []))
+        time_adj_count = len(alternatives.get('time_adjustments', []))
+        partial_count = len(alternatives.get('partial_attendance', []))
+        duration_count = len(alternatives.get('duration_flexibility', []))
+        
+        debug_info.append(f"  Next available days: {next_days_count}")
+        debug_info.append(f"  Time adjustments: {time_adj_count}")
+        debug_info.append(f"  Partial attendance: {partial_count}")
+        debug_info.append(f"  Duration flexibility: {duration_count}")
+        
+        return {
+            "proposed_slots": [],
+            "alternatives": alternatives,
+            "debug_info": debug_info
+        }
+
+# Define the LLM-based Responder Node
 async def respond(state: AgentState):
     """
-    Simplified responder that returns structured JSON for testing.
-    Shows what data was extracted, fetched, and computed.
+    LLM-based responder that generates natural, conversational responses
+    while maintaining structure for better UX.
     """
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessage, HumanMessage
     
     organizer_id = state.get('organizer_id', 'Unknown')
     participant_ids = state.get('participant_ids', [])
     extracted_info = state.get('extracted_info', {})
-    all_calendars = state.get('all_calendars', {})
-    all_working_hours = state.get('all_working_hours', {})
-    candidate_slots = state.get('candidate_slots', [])
-    debug_info = state.get('debug_info', [])
+    proposed_slots = state.get('proposed_slots', [])
+    alternatives = state.get('alternatives')
     
-    # Build a structured response for testing
-    response_data = {
+    params = extracted_info.get('parameters', {})
+    debug_info = state.get('debug_info', [])
+    all_working_hours = state.get('all_working_hours', {})
+    
+    # Prepare structured context for LLM
+    now = datetime.now(TIMEZONE)
+    
+    # Detect edge cases
+    missing_info = extracted_info.get('missing_info', [])
+    past_time_detected = any("PAST TIME" in log for log in debug_info)
+    before_hours_detected = any("BEFORE WORKING HOURS" in log for log in debug_info)
+    
+    # Build context object
+    context = {
         "organizer": organizer_id,
         "participants": participant_ids,
-        "extracted_parameters": extracted_info.get('parameters', {}),
-        "extracted_intent": extracted_info.get('intent', 'unknown'),
-        "calendars_fetched": {
-            user: len(meetings) for user, meetings in all_calendars.items()
-        },
-        "working_hours_fetched": {
-            user: f"{hours.get('start')}-{hours.get('end')} on {hours.get('working_days')}"
-            for user, hours in all_working_hours.items()
-        },
-        "candidate_slots_found": len(candidate_slots),
-        "top_slots": candidate_slots[:5],  # Show top 5
-        "debug_log": debug_info
+        "duration_minutes": params.get('duration_minutes'),
+        "requested_date": params.get('date'),
+        "requested_time": params.get('start_time'),
+        "meeting_title": params.get('title'),
+        "current_time": now.strftime('%A, %B %d at %I:%M %p'),
+        "has_slots": len(proposed_slots) > 0,
+        "has_alternatives": alternatives is not None,
+        "missing_info": missing_info,
+        "past_time": past_time_detected,
+        "before_hours": before_hours_detected,
+        "working_hours": all_working_hours
     }
     
-    # Format as readable text
-    response_text = "## Scheduling Agent Debug Output\n\n"
-    response_text += f"**Organizer:** {organizer_id}\n"
-    response_text += f"**Participants:** {', '.join(participant_ids) if participant_ids else 'None'}\n\n"
+    # Prepare LLM prompt based on scenario
+    scenario = ""
+    scenario_data = {}
     
-    response_text += "### Extracted Information\n"
-    response_text += f"- **Intent:** {extracted_info.get('intent', 'unknown')}\n"
-    params = extracted_info.get('parameters', {})
-    if params:
-        response_text += f"- **Duration:** {params.get('duration_minutes', 'N/A')} minutes\n"
-        response_text += f"- **Date:** {params.get('date', 'Not specified')}\n"
-        response_text += f"- **Time Window:** {params.get('start_time', 'N/A')} - {params.get('end_time', 'N/A')}\n"
-    response_text += "\n"
+    # EDGE CASE HANDLING: Check for special conditions first
     
-    response_text += "### Calendars Fetched\n"
-    for user, count in response_data["calendars_fetched"].items():
-        response_text += f"- **{user}:** {count} existing meetings\n"
-    response_text += "\n"
+    # Edge Case 1: Missing critical information
+    if missing_info and not proposed_slots and not alternatives:
+        scenario = "missing_info"
+        scenario_data = {
+            "missing_fields": missing_info,
+            "needs_date": 'date or time preference' in missing_info or not params.get('date'),
+            "needs_duration": 'duration' in missing_info,
+            "needs_title": 'title' in missing_info or not params.get('title')
+        }
+        
+        prompt = f"""You are a helpful scheduling assistant. The user wants to schedule a meeting, but some information is missing.
+
+Missing information: {', '.join(missing_info)}
+Participants: {', '.join([organizer_id] + participant_ids)}
+
+Generate a friendly, concise response asking for the missing information. Use this structure:
+
+1. Start with a warm greeting acknowledging their request
+2. For each missing piece of information, ask specifically:
+   - If date/time is missing: Ask when they'd like to meet (give 2-3 natural examples)
+   - If duration is missing: Ask how long the meeting should be (give time options)
+   - If title is missing: Ask what to name the meeting (give professional examples)
+3. End with an encouraging call to action
+
+Use markdown formatting:
+- Use **bold** for field labels
+- Use emojis sparingly (📅 for date, ⏱️ for duration, 📝 for title)
+- Use bullet points for examples
+- Keep it conversational and friendly
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
     
-    # In the respond function, around line 710:
-    response_text += "\n### Debug Log (Key Events)\n"
-    # Show entries with ✅ first, then the last few entries
-    important_entries = [e for e in debug_info if '✅' in e or '❌' in e or 'VALID SLOT' in e or 'Current time' in e or 'Generated' in e or 'Conflict' in e]
-    # Add 'Conflict' to the filter ↑
-    for log_entry in important_entries[:20]:  # Show more entries
-        response_text += f"- {log_entry}\n"
+    # Edge Case 2: Requested time is in the past
+    if past_time_detected and not proposed_slots:
+        requested_datetime = ""
+        if params.get('date') and params.get('start_time'):
+            req_date = datetime.strptime(params['date'], "%Y-%m-%d").strftime('%A, %B %d')
+            start_time_obj = parse_time_to_object(params['start_time'])
+            if start_time_obj:
+                requested_datetime = f"{req_date} at {start_time_obj.strftime('%I:%M %p')}"
+            else:
+                requested_datetime = req_date
+        
+        prompt = f"""You are a helpful scheduling assistant. The user requested a meeting in the past.
+
+Requested time: {requested_datetime}
+Current time: {now.strftime('%A, %B %d at %I:%M %p')}
+Participants: {', '.join([organizer_id] + participant_ids)}
+
+Generate a friendly, understanding response that:
+1. Gently points out that the requested time has already passed
+2. Shows empathy (no criticism)
+3. Offers 3-4 helpful alternatives:
+   - Later today (if applicable)
+   - Tomorrow at the same time
+   - Next available slot
+   - Any time that works for them
+
+Use markdown formatting with emojis (⏰). Keep the tone warm and solution-oriented.
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
     
-    response_text += f"### Available Slots Found: {len(candidate_slots)}\n"
-    if candidate_slots:
-        response_text += "Top available slots:\n"
-        for i, slot in enumerate(candidate_slots[:5], 1):
+    # Edge Case 3: Requested time is before working hours
+    if before_hours_detected and not proposed_slots:
+        requested_time = ""
+        if params.get('start_time'):
+            start_time_obj = parse_time_to_object(params['start_time'])
+            if start_time_obj:
+                requested_time = start_time_obj.strftime('%I:%M %p')
+        
+        # Get earliest available time
+        earliest_start = None
+        for user_name in [organizer_id] + participant_ids:
+            if user_name in all_working_hours:
+                w_start = parse_time_to_object(all_working_hours[user_name].get('start', '09:00'))
+                if w_start:
+                    earliest_start = max(earliest_start, w_start) if earliest_start else w_start
+        
+        # Format working hours info
+        hours_info = []
+        for user_name in [organizer_id] + participant_ids:
+            if user_name in all_working_hours:
+                hours = all_working_hours[user_name]
+                start = hours.get('start', '09:00')
+                end = hours.get('end', '17:00')
+                hours_info.append(f"{user_name}: {start} - {end}")
+        
+        prompt = f"""You are a helpful scheduling assistant. The user requested a meeting outside working hours.
+
+Requested time: {requested_time}
+Working hours:
+{chr(10).join(f"- {h}" for h in hours_info)}
+Earliest available: {earliest_start.strftime('%I:%M %p') if earliest_start else '09:00 AM'}
+
+Generate a friendly response that:
+1. Politely explains the time is outside working hours
+2. Shows each person's working hours clearly
+3. Suggests 3-4 alternatives:
+   - The earliest working hour time
+   - Mid-morning (10am)
+   - Any time during working hours
+   - Flexible timing
+
+Use markdown formatting with emojis (⏰). Be understanding and helpful.
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
+    
+    # Edge Case 3B: Requested time is after working hours
+    after_hours_detected = any("AFTER WORKING HOURS" in log for log in debug_info)
+    if after_hours_detected and not proposed_slots:
+        requested_time = ""
+        if params.get('start_time'):
+            start_time_obj = parse_time_to_object(params['start_time'])
+            if start_time_obj:
+                requested_time = start_time_obj.strftime('%I:%M %p')
+        
+        # Get latest available time
+        latest_end = None
+        for user_name in [organizer_id] + participant_ids:
+            if user_name in all_working_hours:
+                w_end = parse_time_to_object(all_working_hours[user_name].get('end', '17:00'))
+                if w_end:
+                    latest_end = min(latest_end, w_end) if latest_end else w_end
+        
+        # Format working hours info
+        hours_info = []
+        for user_name in [organizer_id] + participant_ids:
+            if user_name in all_working_hours:
+                hours = all_working_hours[user_name]
+                start = hours.get('start', '09:00')
+                end = hours.get('end', '17:00')
+                hours_info.append(f"{user_name}: {start} - {end}")
+        
+        prompt = f"""You are a helpful scheduling assistant. The user requested a meeting after working hours.
+
+Requested time: {requested_time}
+Working hours:
+{chr(10).join(f"- {h}" for h in hours_info)}
+Latest working hour ends: {latest_end.strftime('%I:%M %p') if latest_end else '05:00 PM'}
+
+Generate a friendly response that:
+1. Politely explains the time is after working hours
+2. Shows each person's working hours clearly
+3. Suggests 3-4 alternatives:
+   - An earlier time today (if still during work hours)
+   - Tomorrow at a reasonable time
+   - Any time during working hours
+   - Flexible morning/afternoon options
+
+Use markdown formatting with emojis (⏰). Be understanding and helpful.
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
+    
+    # Edge Case 4: Non-working day requested
+    non_working_day_detected = any("NON-WORKING DAY" in log for log in debug_info)
+    if non_working_day_detected and not proposed_slots:
+        requested_date = ""
+        requested_day = ""
+        if params.get('date'):
+            req_dt = datetime.strptime(params['date'], "%Y-%m-%d")
+            requested_date = req_dt.strftime('%A, %B %d')
+            requested_day = req_dt.strftime('%A')
+        
+        # Get common working days
+        common_days = []
+        if all_working_hours:
+            common_set = None
+            for user_name in [organizer_id] + participant_ids:
+                if user_name in all_working_hours:
+                    user_days = set(all_working_hours[user_name].get('working_days', []))
+                    if common_set is None:
+                        common_set = user_days
+                    else:
+                        common_set = common_set.intersection(user_days)
+            if common_set:
+                common_days = sorted(list(common_set))
+        
+        # Get next working day alternatives from alternatives dict
+        next_days_info = []
+        if alternatives and alternatives.get('next_days'):
+            for alt in alternatives.get('next_days', [])[:3]:
+                start_dt = datetime.fromisoformat(alt['start'])
+                next_days_info.append(f"{start_dt.strftime('%A, %B %d at %I:%M %p')}")
+        
+        prompt = f"""You are a helpful scheduling assistant. The user requested a meeting on a non-working day.
+
+Requested date: {requested_date} ({requested_day})
+Common working days: {', '.join(common_days)}
+Participants: {', '.join([organizer_id] + participant_ids)}
+
+Next available working days:
+{chr(10).join(f"- {day}" for day in next_days_info) if next_days_info else "- No specific alternatives found"}
+
+Generate a friendly response that:
+1. Gently explains that {requested_day} is not a working day for all participants
+2. Shows which days ARE working days
+3. Lists the next 2-3 available working days as specific alternatives
+4. Includes clear action prompts like "Say: 'Try Monday instead'"
+5. Offers flexibility ("or suggest any day that works for you")
+
+Use markdown formatting with emojis (📅). Be helpful and understanding about the mix-up.
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
+    
+    # CONFIRMATION FLOW: Check if a proposal was just created
+    proposal_id = state.get('proposal_id')
+    confirmation_status = state.get('confirmation_status')
+    
+    # Handle case where user tried to confirm but slots weren't available
+    if confirmation_status == 'needs_scheduling':
+        prompt = f"""You are a helpful scheduling assistant. The user tried to confirm a meeting slot, but there are no active proposals to confirm.
+
+This happens when:
+- The conversation was interrupted or reset
+- They're trying to confirm before requesting a meeting
+- The previous suggestions expired
+
+Generate a friendly, helpful response that:
+1. Explains they need to first request a meeting to see available times
+2. Gives them a clear example of what to say:
+   - "Schedule a meeting with [participants] on [date] at [time]"
+   - "I need to meet with Bob tomorrow afternoon"
+3. Reassures them it's an easy two-step process:
+   - Step 1: Request meeting → See suggestions
+   - Step 2: Confirm preferred slot
+4. Use a warm, encouraging tone
+
+Use markdown formatting with emojis (📅, 💡). Keep it brief and actionable.
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
+    
+    if proposal_id and confirmation_status == 'confirmed':
+        # Get the confirmed slot details from proposed_slots
+        slot_selection = extracted_info.get('slot_selection', 1)
+        if slot_selection > len(proposed_slots):
+            slot_selection = 1
+        
+        confirmed_slot = proposed_slots[slot_selection - 1] if proposed_slots else None
+        
+        confirmed_duration = 30  # Default
+        if confirmed_slot:
+            start_dt = datetime.fromisoformat(confirmed_slot['start'])
+            end_dt = datetime.fromisoformat(confirmed_slot['end'])
+            confirmed_time = f"{start_dt.strftime('%A, %B %d at %I:%M %p')} - {end_dt.strftime('%I:%M %p')}"
+            
+            # Calculate actual duration from the slot
+            duration_seconds = (end_dt - start_dt).total_seconds()
+            confirmed_duration = int(duration_seconds / 60)
+        else:
+            confirmed_time = "the selected time"
+            confirmed_duration = params.get('duration_minutes', 30)
+        
+        prompt = f"""You are a helpful scheduling assistant. The user just confirmed a meeting!
+
+Meeting Confirmation Details:
+- Proposal ID: {proposal_id}
+- Meeting Title: {params.get('title', 'Meeting')}
+- Time: {confirmed_time if confirmed_slot else 'TBD'}
+- Duration: {confirmed_duration} minutes
+- Organizer: {organizer_id}
+- Participants: {', '.join(participant_ids)}
+- Status: Pending participant responses
+
+Generate an enthusiastic confirmation response that:
+1. Celebrates the booking with 🎉 emoji
+2. Shows a clear summary of the confirmed meeting details
+3. Explains the next steps:
+   - Proposal has been created and saved
+   - All participants have been notified through their dashboards.
+   - Waiting for participant responses (status: pending)
+   - Meeting will be finalized once participants respond
+4. Provides the proposal ID for reference
+5. Offers helpful options:
+   - Participants can accept or decline
+   - Organizer can cancel if needed
+   - Organizer can check status anytime
+
+Use markdown formatting:
+- Use **bold** for important details (time, participants)
+- Use bullet points for next steps
+- Include relevant emojis (🎉, ✅, 📧, ⏰)
+- Keep tone professional but warm and encouraging
+
+Generate the confirmation message now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
+    
+    # NORMAL FLOW: If no edge cases, proceed with standard responses
+    
+    # Case 1: Slots were found
+    if proposed_slots:
+        # Format slot information
+        slots_info = []
+        for i, slot in enumerate(proposed_slots, 1):
             start_dt = datetime.fromisoformat(slot['start'])
             end_dt = datetime.fromisoformat(slot['end'])
-            response_text += f"{i}. **{start_dt.strftime('%A, %B %d at %I:%M %p')}** - {end_dt.strftime('%I:%M %p')}\n"
+            reasons = slot.get('ranking_reasons', [])
+            time_str = f"{start_dt.strftime('%A, %B %d at %I:%M %p')} - {end_dt.strftime('%I:%M %p')}"
+            slots_info.append({
+                "number": i,
+                "time": time_str,
+                "reasons": reasons,
+                "is_top": i == 1
+            })
+        
+        # Get request details
+        req_details = ""
+        if params.get('date') and params.get('start_time'):
+            req_date = datetime.strptime(params['date'], "%Y-%m-%d").strftime('%A, %B %d')
+            start_time_obj = parse_time_to_object(params['start_time'])
+            if start_time_obj:
+                req_details = f"{req_date} from {start_time_obj.strftime('%I:%M %p')}"
+        
+        prompt = f"""You are a helpful scheduling assistant. You've found available meeting times!
+
+Meeting Details:
+- Title: {params.get('title', 'Meeting')}
+- Duration: {params.get('duration_minutes', 30)} minutes
+- Participants: {', '.join([organizer_id] + participant_ids)}
+- Requested: {req_details if req_details else 'Not specified'}
+
+Available Slots (ranked by preference):
+{chr(10).join(f"{s['number']}. {'⭐ ' if s['is_top'] else ''}{s['time']}" + (f" - {', '.join(s['reasons'])}" if s['reasons'] else '') for s in slots_info)}
+
+Generate an enthusiastic, helpful response that:
+1. Celebrates finding available times (use 🎉 emoji)
+2. Summarizes the meeting details clearly
+3. Lists the top {len(proposed_slots)} slots with:
+   - Slot numbers for easy reference
+   - Times in readable format
+   - Brief reasons why each works (from the data)
+   - Highlight the top recommendation with ⭐
+4. Provides clear instructions for booking:
+   - "Book slot 1" or similar phrases
+   - Option to request different times
+5. Keep it conversational and encouraging
+
+Use markdown formatting. Be enthusiastic but professional.
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
+    
+    # Case 2: No slots found - show alternatives
+    elif alternatives:
+        # Get request details
+        req_details = ""
+        if params.get('date'):
+            req_date = datetime.strptime(params['date'], "%Y-%m-%d").strftime('%A, %B %d')
+            req_details = req_date
+            if params.get('start_time'):
+                start_time_obj = parse_time_to_object(params['start_time'])
+                if start_time_obj:
+                    req_details += f" at {start_time_obj.strftime('%I:%M %p')}"
+        
+        # Format alternatives
+        alt_sections = []
+        
+        # Next available days
+        next_days = alternatives.get('next_days', [])
+        if next_days:
+            days_list = []
+            for alt in next_days[:3]:
+                start_dt = datetime.fromisoformat(alt['start'])
+                end_dt = datetime.fromisoformat(alt['end'])
+                status = "All participants available" if alt['all_available'] else "Check availability"
+                days_list.append(f"{start_dt.strftime('%A, %B %d at %I:%M %p')} - {end_dt.strftime('%I:%M %p')} ({status})")
+            alt_sections.append(("Different Days", days_list))
+        
+        # Time adjustments
+        time_adj = alternatives.get('time_adjustments', [])
+        if time_adj:
+            earlier = [t for t in time_adj if t['type'] == 'earlier'][:2]
+            later = [t for t in time_adj if t['type'] == 'later'][:2]
+            times_list = []
+            if earlier:
+                for alt in earlier:
+                    start_dt = datetime.fromisoformat(alt['start'])
+                    end_dt = datetime.fromisoformat(alt['end'])
+                    times_list.append(f"Earlier: {start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')}")
+            if later:
+                for alt in later:
+                    start_dt = datetime.fromisoformat(alt['start'])
+                    end_dt = datetime.fromisoformat(alt['end'])
+                    times_list.append(f"Later: {start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')}")
+            if times_list:
+                alt_sections.append(("Different Times", times_list))
+        
+        # Partial attendance
+        partial = alternatives.get('partial_attendance', [])
+        if partial:
+            partial_info = []
+            for alt in partial[:1]:
+                start_dt = datetime.fromisoformat(alt['start'])
+                end_dt = datetime.fromisoformat(alt['end'])
+                available = ', '.join(alt['available'])
+                unavailable = ', '.join(alt['unavailable'])
+                partial_info.append(f"{start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')} (Available: {available}, Unavailable: {unavailable})")
+            alt_sections.append(("Partial Attendance", partial_info))
+        
+        # Duration flexibility
+        duration_flex = alternatives.get('duration_flexibility', [])
+        if duration_flex:
+            dur_list = [f"{alt['duration_minutes']} minutes (saves {alt['reduction']} minutes)" for alt in duration_flex]
+            alt_sections.append(("Shorter Duration", dur_list))
+        
+        prompt = f"""You are a helpful scheduling assistant. No perfect slots were found, but you have alternatives.
+
+Your Request:
+- Duration: {params.get('duration_minutes', 30)} minutes
+- Participants: {', '.join([organizer_id] + participant_ids)}
+- Requested: {req_details if req_details else 'Not specified'}
+
+Available Alternatives:
+{chr(10).join(f"{section[0]}:{chr(10)}{chr(10).join(f'  - {item}' for item in section[1])}" for section in alt_sections)}
+
+Generate an empathetic, solution-oriented response that:
+1. Acknowledges no perfect match was found (use ❌ emoji sparingly)
+2. Briefly summarizes their request
+3. Explains why it didn't work (be concise and understanding)
+4. Presents alternatives in organized sections:
+   - 📅 Different days (if available)
+   - ⏰ Different times (if available)
+   - 👥 Partial attendance (if available)
+   - ⏱️ Shorter duration (if available)
+5. For each alternative, include:
+   - Clear, readable format
+   - Action prompts (e.g., "Say: 'Try Monday'")
+   - Status indicators (✅/⚠️)
+6. End with an encouraging question about what they'd like to do
+
+Use markdown formatting. Be empathetic, positive, and helpful. Focus on solutions, not problems.
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
+    
+    # Case 3: Error or no results (fallback)
     else:
-        response_text += "❌ No available slots found that work for all participants.\n"
-    
-    response_text += "\n### Debug Log (Key Events)\n"
-    # Show entries with ✅ first, then the last few entries
-    important_entries = [e for e in debug_info if '✅' in e or 'VALID SLOT' in e or 'Current time' in e or 'Generated' in e]
-    for log_entry in important_entries:
-        response_text += f"- {log_entry}\n"
-    
-    response_text += "\n### Recent Activity\n"
-    for log_entry in debug_info[-10:]:
-        response_text += f"- {log_entry}\n"
-    
-    ai_message = AIMessage(content=response_text)
-    
-    return {"messages": [ai_message]}
+        prompt = f"""You are a helpful scheduling assistant. Something unexpected happened - no slots or alternatives were generated.
+
+Request details:
+- Participants: {', '.join([organizer_id] + participant_ids)}
+- Duration: {params.get('duration_minutes', 30)} minutes
+
+Generate a friendly, apologetic response that:
+1. Acknowledges something went wrong
+2. Suggests possible reasons:
+   - No common working days
+   - All participants busy
+   - Unexpected scheduling conflict
+3. Encourages them to:
+   - Try a different day or time range
+   - Provide more flexible timing
+   - Contact you with specific preferences
+
+Be apologetic but helpful. Use markdown formatting. Keep it brief and actionable.
+
+Generate the response now:"""
+
+        response_text = await llm.ainvoke([HumanMessage(content=prompt)])
+        ai_message = AIMessage(content=response_text.content)
+        return {"messages": [ai_message]}
 
 # Conditional routing function
 def should_fetch_data(state: AgentState) -> str:
     """
-    Determine if we should fetch calendars/working hours or skip directly to respond.
-    Skip scheduling logic for casual chat or error states.
+    Determine if we should fetch calendars/working hours, confirm schedule, or skip directly to respond.
+    Skip scheduling logic for casual chat, error states, or missing critical info.
     """
     extracted_info = state.get('extracted_info', {})
     intent = extracted_info.get('intent', 'chat')
+    missing_info = extracted_info.get('missing_info', [])
+    
+    # Check if user wants to confirm a previously suggested schedule
+    if intent == 'confirm_schedule':
+        logger.info(f"Intent 'confirm_schedule' - routing to confirm_schedule node")
+        return "confirm_schedule"
+    
+    # EDGE CASE 3: If schedule_meeting but missing critical info, ask user first
+    if intent == 'schedule_meeting' and missing_info:
+        logger.info(f"Missing info: {missing_info} - asking user before scheduling")
+        return "respond"
     
     # Only fetch data for scheduling-related intents
     if intent in ['schedule_meeting', 'query_availability']:
@@ -764,6 +1820,8 @@ workflow.add_node("parse_input", parse_input)
 workflow.add_node("fetch_calendars", fetch_calendars_node)
 workflow.add_node("fetch_working_hours", fetch_working_hours_node)
 workflow.add_node("find_slots", find_slots_node)
+workflow.add_node("select_best_slot", select_best_slot)
+workflow.add_node("confirm_schedule", confirm_schedule_node)
 workflow.add_node("respond", respond)
 
 # Set entry point
@@ -775,15 +1833,23 @@ workflow.add_conditional_edges(
     should_fetch_data,
     {
         "fetch_calendars": "fetch_calendars",
+        "confirm_schedule": "confirm_schedule",
         "respond": "respond"
     }
 )
 
 # Add linear edges for scheduling flow
-# parse_input -> fetch_calendars -> fetch_working_hours -> find_slots -> respond
+# parse_input -> fetch_calendars -> fetch_working_hours -> find_slots -> select_best_slot -> respond
 workflow.add_edge("fetch_calendars", "fetch_working_hours")
 workflow.add_edge("fetch_working_hours", "find_slots")
-workflow.add_edge("find_slots", "respond")
+workflow.add_edge("find_slots", "select_best_slot")
+workflow.add_edge("select_best_slot", "respond")
+
+# Add edge for confirmation flow
+# parse_input -> confirm_schedule -> respond
+workflow.add_edge("confirm_schedule", "respond")
+
+# All paths end at respond
 workflow.add_edge("respond", END)
 
 # Compile the graph

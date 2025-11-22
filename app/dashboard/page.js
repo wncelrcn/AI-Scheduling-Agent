@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/dialog";
 import { useEffect, useState, useRef } from "react";
 
+import { MeetingAlerts } from "@/components/dashboard/MeetingAlerts";
+
 export default function Dashboard() {
   const router = useRouter();
   const [username, setUsername] = useState("");
@@ -27,6 +29,7 @@ export default function Dashboard() {
   const [messages, setMessages] = useState([]);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [agentState, setAgentState] = useState(null); // Store agent state for continuity
   const scrollRef = useRef(null);
 
   // Settings State
@@ -47,6 +50,9 @@ export default function Dashboard() {
   const [availableUsers, setAvailableUsers] = useState([]);
   const [selectedParticipants, setSelectedParticipants] = useState([]);
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
+
+  // Meeting Alerts State
+  const [isMeetingAlertsOpen, setIsMeetingAlertsOpen] = useState(false);
 
   const daysOfWeek = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -212,6 +218,7 @@ export default function Dashboard() {
           username: username,
           history: history,
           participants: selectedParticipants,
+          previous_state: agentState, // Pass previous agent state for continuity
         }),
       });
 
@@ -220,6 +227,11 @@ export default function Dashboard() {
       }
 
       const data = await response.json();
+
+      // Store agent state for next turn
+      if (data.agent_state) {
+        setAgentState(data.agent_state);
+      }
 
       const aiMessage = {
         role: "assistant",
@@ -264,7 +276,7 @@ export default function Dashboard() {
           <Button variant="outline" onClick={() => setIsSettingsOpen(true)}>
             Set Working Hours
           </Button>
-          <Button variant="outline">Meeting Alerts</Button>
+          <Button variant="outline" onClick={() => setIsMeetingAlertsOpen(true)}>Meeting Alerts</Button>
           <Button onClick={handleLogout} variant="outline">
             Logout
           </Button>
@@ -643,6 +655,13 @@ export default function Dashboard() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Meeting Alerts Modal */}
+      <MeetingAlerts 
+        isOpen={isMeetingAlertsOpen} 
+        onClose={() => setIsMeetingAlertsOpen(false)} 
+        username={username}
+      />
     </div>
   );
 }

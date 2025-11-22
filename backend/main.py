@@ -31,9 +31,13 @@ class ChatRequest(BaseModel):
     username: str
     history: List[Message] = []
     participants: List[str] = []
+    # Previous agent state (optional, for state persistence)
+    previous_state: Optional[Dict[str, Any]] = None
 
 class ChatResponse(BaseModel):
     response: str
+    # Return agent state for next turn
+    agent_state: Optional[Dict[str, Any]] = None
 
 @app.get("/")
 def read_root():
@@ -54,18 +58,43 @@ async def chat_endpoint(request: ChatRequest):
         # Add the current new message
         langchain_messages.append(HumanMessage(content=request.message))
         
-        # Prepare state with new structure
-        initial_state = {
-            "messages": langchain_messages,
-            "organizer_id": request.username,  # The username is the organizer
-            "participant_ids": request.participants,  # Selected participants from UI
-            "extracted_info": None,
-            "all_calendars": {},
-            "all_working_hours": {},
-            "candidate_slots": [],
-            "proposed_slot": None,
-            "debug_info": []  # Initialize debug log
-        }
+        # Prepare state - use previous state if provided, otherwise initialize fresh
+        if request.previous_state:
+            # Preserve state from previous turn, but update messages and reset some fields
+            initial_state = {
+                "messages": langchain_messages,
+                "organizer_id": request.username,
+                "participant_ids": request.participants,
+                # Preserve these from previous turn (agent will decide whether to use them)
+                "extracted_info": request.previous_state.get("extracted_info"),
+                "all_calendars": request.previous_state.get("all_calendars", {}),
+                "all_working_hours": request.previous_state.get("all_working_hours", {}),
+                "candidate_slots": request.previous_state.get("candidate_slots", []),
+                "proposed_slots": request.previous_state.get("proposed_slots", []),
+                "proposed_slot": request.previous_state.get("proposed_slot"),
+                "alternatives": request.previous_state.get("alternatives"),
+                # Reset confirmation state for new turn
+                "proposal_id": None,
+                "confirmation_status": None,
+                "debug_info": []
+            }
+        else:
+            # Fresh conversation - initialize with empty state
+            initial_state = {
+                "messages": langchain_messages,
+                "organizer_id": request.username,
+                "participant_ids": request.participants,
+                "extracted_info": None,
+                "all_calendars": {},
+                "all_working_hours": {},
+                "candidate_slots": [],
+                "proposed_slots": [],
+                "proposed_slot": None,
+                "alternatives": None,
+                "proposal_id": None,
+                "confirmation_status": None,
+                "debug_info": []
+            }
         
         # Invoke the agent
         # We use ainvoke for async execution
@@ -75,7 +104,21 @@ async def chat_endpoint(request: ChatRequest):
         last_message = result["messages"][-1]
         response_content = last_message.content
         
-        return ChatResponse(response=response_content)
+        # Prepare state to return (exclude messages to avoid duplication)
+        state_to_return = {
+            "extracted_info": result.get("extracted_info"),
+            "all_calendars": result.get("all_calendars"),
+            "all_working_hours": result.get("all_working_hours"),
+            "candidate_slots": result.get("candidate_slots"),
+            "proposed_slots": result.get("proposed_slots"),
+            "proposed_slot": result.get("proposed_slot"),
+            "alternatives": result.get("alternatives"),
+        }
+        
+        return ChatResponse(
+            response=response_content,
+            agent_state=state_to_return
+        )
             
     except Exception as e:
         print(f"Error in chat_endpoint: {str(e)}")
