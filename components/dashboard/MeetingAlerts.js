@@ -163,6 +163,22 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
     }).format(date);
   };
 
+  const formatDateRange = (startStr, endStr) => {
+    const start = new Date(startStr);
+    const end = new Date(endStr);
+    const startFormatted = formatDate(startStr);
+
+    if (start.toDateString() === end.toDateString()) {
+      const endTime = new Intl.DateTimeFormat("en-US", {
+        hour: "numeric",
+        minute: "numeric",
+      }).format(end);
+      return `${startFormatted} - ${endTime}`;
+    }
+
+    return `${startFormatted} - ${formatDate(endStr)}`;
+  };
+
   const formatStatus = (status) => {
     if (!status) return "Unknown";
     return status.charAt(0).toUpperCase() + status.slice(1);
@@ -201,9 +217,22 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
               <Clock className="w-6 h-6 text-primary" />
               Meeting Alerts
             </DialogTitle>
-            <DialogDescription>
-              Manage your meeting proposals and invitations.
-            </DialogDescription>
+            <div className="flex items-center justify-between">
+              <DialogDescription>
+                Manage your meeting proposals and invitations.
+              </DialogDescription>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={fetchProposals}
+                disabled={isLoading}
+                aria-label="Refresh alerts"
+              >
+                <RefreshCcw
+                  className={cn("h-4 w-4", isLoading && "animate-spin")}
+                />
+              </Button>
+            </div>
           </DialogHeader>
         </div>
 
@@ -340,7 +369,10 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                               {proposal.meeting_title || "Untitled Meeting"}
                             </CardTitle>
                             <CardDescription>
-                              {formatDate(proposal.proposed_start)}
+                              {formatDateRange(
+                                proposal.proposed_start,
+                                proposal.proposed_end
+                              )}
                             </CardDescription>
                           </div>
                           <Badge
@@ -388,15 +420,14 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                     </Badge>
                                   </div>
                                 </div>
-                                {resp.response === "rejected" &&
-                                  resp.feedback && (
-                                    <div className="text-sm bg-destructive/10 text-destructive p-2 rounded border border-destructive/20">
-                                      <span className="font-semibold block text-xs mb-1">
-                                        Reason for Rejection:
-                                      </span>
-                                      {resp.feedback}
-                                    </div>
-                                  )}
+                                {resp.response === "rejected" && (
+                                  <div className="text-sm bg-destructive/10 text-destructive p-2 rounded border border-destructive/20">
+                                    <span className="font-semibold block text-xs mb-1">
+                                      Reason for Rejection:
+                                    </span>
+                                    {resp.feedback || "No reason provided"}
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>

@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useEffect, useState, useRef } from "react";
+import { Send, Users, X, Bot, AlertCircle } from "lucide-react";
 
 import { MeetingAlerts } from "@/components/dashboard/MeetingAlerts";
 
@@ -193,6 +194,11 @@ export default function Dashboard() {
 
     if (!inputValue.trim()) return;
 
+    if (selectedParticipants.length === 0) {
+      setIsParticipantsOpen(true);
+      return;
+    }
+
     const userMessage = {
       role: "user",
       content: inputValue,
@@ -276,7 +282,12 @@ export default function Dashboard() {
           <Button variant="outline" onClick={() => setIsSettingsOpen(true)}>
             Set Working Hours
           </Button>
-          <Button variant="outline" onClick={() => setIsMeetingAlertsOpen(true)}>Meeting Alerts</Button>
+          <Button
+            variant="outline"
+            onClick={() => setIsMeetingAlertsOpen(true)}
+          >
+            Meeting Alerts
+          </Button>
           <Button onClick={handleLogout} variant="outline">
             Logout
           </Button>
@@ -467,51 +478,99 @@ export default function Dashboard() {
 
       {/* Bottom Input Area (Only visible when chat is closed) */}
       {!isChatOpen && (
-        <div className="mt-6 pt-4 border-t">
-          {/* Selected Participants Display */}
-          {selectedParticipants.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-3 max-w-4xl mx-auto px-1">
-              <span className="text-xs text-muted-foreground self-center mr-2">
-                Including:
-              </span>
-              {selectedParticipants.map((p) => (
-                <Badge
-                  key={p}
-                  variant="secondary"
-                  className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground transition-colors"
-                  onClick={() => toggleParticipant(p)}
-                >
-                  {p} ×
-                </Badge>
-              ))}
+        <div className="mt-auto pt-6 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-10 pb-6 shadow-[0_-1px_10px_rgba(0,0,0,0.05)]">
+          <div className="max-w-4xl mx-auto space-y-4 px-4">
+            <div className="flex flex-col gap-1">
+              <h2 className="text-lg font-semibold flex items-center gap-2 text-foreground">
+                <Bot className="w-5 h-5 text-primary" />
+                AI Scheduling Assistant
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Select participants first, then describe your meeting request.
+              </p>
             </div>
-          )}
-          <div className="flex gap-2 max-w-4xl mx-auto">
-            <Input
-              placeholder="Type your request here (e.g., 'Schedule a meeting with John tomorrow at 2pm')..."
-              className="flex-1"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-            />
-            <Button
-              variant="outline"
-              onClick={() => setIsParticipantsOpen(true)}
-              className="relative"
-            >
-              Participants
-              {selectedParticipants.length > 0 && (
-                <Badge variant="secondary" className="ml-2">
-                  {selectedParticipants.length}
-                </Badge>
+
+            {/* Selected Participants Display */}
+            <div className="min-h-[32px]">
+              {selectedParticipants.length > 0 ? (
+                <div className="flex flex-wrap gap-2 animate-in fade-in slide-in-from-bottom-2">
+                  <span className="text-sm text-muted-foreground self-center mr-2">
+                    Attendees:
+                  </span>
+                  {selectedParticipants.map((p) => (
+                    <Badge
+                      key={p}
+                      variant="secondary"
+                      className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground transition-colors px-3 py-1 flex items-center gap-1"
+                      onClick={() => toggleParticipant(p)}
+                    >
+                      {p} <X className="w-3 h-3 opacity-50" />
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-amber-600/90 font-medium flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4" />
+                  Please select participants to begin scheduling
+                </p>
               )}
-            </Button>
-            <Button
-              onClick={handleSend}
-              disabled={isProcessing || !inputValue.trim()}
-            >
-              Send
-            </Button>
+            </div>
+
+            <div className="flex gap-3 items-stretch">
+              <Button
+                variant={
+                  selectedParticipants.length === 0 ? "default" : "outline"
+                }
+                size="lg"
+                onClick={() => setIsParticipantsOpen(true)}
+                className={`shadow-sm transition-all h-12 ${
+                  selectedParticipants.length === 0
+                    ? "ring-2 ring-primary/20 hover:ring-primary/40"
+                    : ""
+                }`}
+              >
+                <Users className="w-4 h-4 mr-2" />
+                {selectedParticipants.length === 0
+                  ? "Add Participants"
+                  : "Manage Participants"}
+                {selectedParticipants.length > 0 && (
+                  <Badge
+                    variant="secondary"
+                    className="ml-2 bg-primary/10 text-primary border-0"
+                  >
+                    {selectedParticipants.length}
+                  </Badge>
+                )}
+              </Button>
+
+              <div className="flex-1 flex gap-2">
+                <Input
+                  placeholder={
+                    selectedParticipants.length === 0
+                      ? "Select participants to enable chat..."
+                      : "Type your request (e.g., 'Schedule a meeting for tomorrow at 2pm')..."
+                  }
+                  className="flex-1 h-12 text-base shadow-sm"
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  disabled={selectedParticipants.length === 0}
+                />
+                <Button
+                  onClick={handleSend}
+                  disabled={
+                    isProcessing ||
+                    !inputValue.trim() ||
+                    selectedParticipants.length === 0
+                  }
+                  size="lg"
+                  className="shadow-sm px-6 h-12"
+                >
+                  <Send className="w-4 h-4 mr-2" />
+                  Send Request
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -657,9 +716,9 @@ export default function Dashboard() {
       </Dialog>
 
       {/* Meeting Alerts Modal */}
-      <MeetingAlerts 
-        isOpen={isMeetingAlertsOpen} 
-        onClose={() => setIsMeetingAlertsOpen(false)} 
+      <MeetingAlerts
+        isOpen={isMeetingAlertsOpen}
+        onClose={() => setIsMeetingAlertsOpen(false)}
         username={username}
       />
     </div>

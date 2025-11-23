@@ -69,17 +69,19 @@ export function Calendar({ username }) {
 
   return (
     <div className="flex flex-col h-full w-full max-w-7xl mx-auto bg-background rounded-lg border shadow-sm p-2 sm:p-4">
-      <CalendarHeader
-        currentDate={currentDate}
-        onPrevMonth={prevMonth}
-        onNextMonth={nextMonth}
-        onToday={goToToday}
-      />
-
       <Events currentDate={currentDate} username={username}>
-        {({ getEventsForDay }) => (
-          <div className="flex flex-col border rounded-lg overflow-hidden bg-muted flex-1 min-h-0">
-            {/* Sticky weekday headers */}
+        {({ getEventsForDay, fetchEvents, isLoading }) => (
+          <>
+            <CalendarHeader
+              currentDate={currentDate}
+              onPrevMonth={prevMonth}
+              onNextMonth={nextMonth}
+              onToday={goToToday}
+              onRefresh={fetchEvents}
+              isLoading={isLoading}
+            />
+            <div className="flex flex-col border rounded-lg overflow-hidden bg-muted flex-1 min-h-0">
+              {/* Sticky weekday headers */}
             <div className="grid grid-cols-7 gap-px bg-muted border-b sticky top-0 z-10">
               {weekDays.map((day) => (
                 <div
@@ -112,7 +114,8 @@ export function Calendar({ username }) {
                 </div>
               ))}
             </div>
-          </div>
+            </div>
+          </>
         )}
       </Events>
     </div>

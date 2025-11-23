@@ -4,12 +4,14 @@ import { createClient } from "@/utils/supabase/client";
 
 export function Events({ currentDate, username, children }) {
   const [events, setEvents] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
   const supabase = createClient();
 
-  useEffect(() => {
-    const fetchEvents = async () => {
-      if (!username) return;
+  const fetchEvents = async () => {
+    if (!username) return;
 
+    setIsLoading(true);
+    try {
       const { data, error } = await supabase
         .from("meetings")
         .select("*")
@@ -36,8 +38,14 @@ export function Events({ currentDate, username, children }) {
         });
         setEvents(formattedEvents);
       }
-    };
+    } catch (error) {
+      console.error("Error in fetchEvents:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
+  useEffect(() => {
     fetchEvents();
   }, [username]);
 
@@ -55,5 +63,5 @@ export function Events({ currentDate, username, children }) {
     });
   };
 
-  return children({ events, getEventsForDay });
+  return children({ events, getEventsForDay, fetchEvents, isLoading });
 }
