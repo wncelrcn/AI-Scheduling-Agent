@@ -19,7 +19,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useEffect, useState, useRef } from "react";
-import { Send, Users, X, Bot, AlertCircle } from "lucide-react";
+import {
+  Send,
+  Users,
+  X,
+  Bot,
+  AlertCircle,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
 
 import { MeetingAlerts } from "@/components/dashboard/MeetingAlerts";
 
@@ -28,7 +36,8 @@ export default function Dashboard() {
   const [username, setUsername] = useState("");
   const [inputValue, setInputValue] = useState("");
   const [messages, setMessages] = useState([]);
-  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false); // Controls full expansion (history)
+  const [isSheetPeeking, setIsSheetPeeking] = useState(false); // Controls input visibility
   const [isProcessing, setIsProcessing] = useState(false);
   const [agentState, setAgentState] = useState(null); // Store agent state for continuity
   const scrollRef = useRef(null);
@@ -208,7 +217,8 @@ export default function Dashboard() {
     // Optimistic update
     setMessages((prev) => [...prev, userMessage]);
     setInputValue("");
-    setIsChatOpen(true); // Open the chat sheet
+    setIsChatOpen(true); // Auto-expand chat on send
+    setIsSheetPeeking(true); // Ensure sheet is visible
     setIsProcessing(true);
 
     // Prepare history for backend (exclude current message which is added manually)
@@ -268,312 +278,331 @@ export default function Dashboard() {
     }
   };
 
+  // Handle toggle behavior
+  const toggleSheet = () => {
+    if (isChatOpen) {
+      // If fully open, minimize completely
+      setIsChatOpen(false);
+      setIsSheetPeeking(false);
+    } else if (isSheetPeeking) {
+      // If peeking (input visible), expand to full
+      setIsChatOpen(true);
+    } else {
+      // If minimized, peek (show input)
+      setIsSheetPeeking(true);
+    }
+  };
+
+  // Explicitly close
+  const closeSheet = () => {
+    setIsChatOpen(false);
+    setIsSheetPeeking(false);
+  };
+
+  // Determine transform class based on state
+  const getSheetTransform = () => {
+    if (isChatOpen) return "translate-y-0"; // Full height
+    if (isSheetPeeking) return "translate-y-0"; // Auto height (content visible)
+    return "translate-y-[calc(100%-24px)]"; // Only handle visible (approx 24px)
+  };
+
   return (
-    <div className="flex flex-col h-screen p-6 bg-background text-foreground overflow-hidden relative">
-      {/* Header */}
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold">Calendar Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            Welcome back, {username}!
-          </p>
-        </div>
-        <div className="flex gap-4">
-          <Button variant="outline" onClick={() => setIsSettingsOpen(true)}>
-            Set Working Hours
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => setIsMeetingAlertsOpen(true)}
-          >
-            Meeting Alerts
-          </Button>
-          <Button onClick={handleLogout} variant="outline">
-            Logout
-          </Button>
-        </div>
-      </div>
-
-      {/* Main Content - Calendar View */}
-      <div className="flex-1 flex items-start justify-center overflow-hidden">
-        <div className="w-full max-w-7xl h-full max-h-full">
-          <Calendar username={username} />
-        </div>
-      </div>
-
-      {/* Chat Interface - Sliding Sheet Overlay */}
-      {isChatOpen && (
-        <>
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 bg-black/20 z-40 backdrop-blur-sm transition-opacity duration-300 animate-in fade-in"
-            onClick={() => setIsChatOpen(false)}
-          />
-
-          {/* Chat Sheet */}
-          <Card className="fixed inset-x-0 top-[15vh] h-[70vh] max-h-[600px] z-50 rounded-3xl shadow-2xl border animate-in slide-in-from-bottom duration-500 flex flex-col mx-auto max-w-3xl">
-            <div className="px-4 pt-1.5 pb-3 border-b flex justify-between items-center bg-muted/30 rounded-t-3xl">
-              <div className="flex flex-col">
-                <span className="font-semibold">Scheduling Assistant</span>
-                <span className="text-xs text-muted-foreground">
-                  AI Agent active
-                </span>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="rounded-full h-8 w-8 p-0 hover:bg-muted"
-                onClick={() => setIsChatOpen(false)}
-              >
-                ×
-              </Button>
-            </div>
-
-            <CardContent
-              className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth"
-              ref={scrollRef}
+    <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden relative">
+      {/* Top Section with Calendar */}
+      <div className="flex-1 flex flex-col p-6 pb-12 overflow-hidden relative z-0">
+        {/* Header */}
+        <div className="flex justify-between items-center mb-6 shrink-0">
+          <div>
+            <h1 className="text-2xl font-bold">Calendar Dashboard</h1>
+            <p className="text-sm text-muted-foreground">
+              Welcome back, {username}!
+            </p>
+          </div>
+          <div className="flex gap-4">
+            <Button variant="outline" onClick={() => setIsSettingsOpen(true)}>
+              Set Working Hours
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setIsMeetingAlertsOpen(true)}
             >
-              {/* Selected Participants Display in Chat */}
-              {selectedParticipants.length > 0 && (
-                <div className="flex flex-wrap gap-2 mb-4 pb-4 border-b">
-                  <span className="text-xs text-muted-foreground self-center mr-2">
-                    Active Participants:
-                  </span>
-                  {selectedParticipants.map((p) => (
-                    <Badge key={p} variant="secondary">
-                      {p}
-                    </Badge>
-                  ))}
-                </div>
-              )}
+              Meeting Alerts
+            </Button>
+            <Button onClick={handleLogout} variant="outline">
+              Logout
+            </Button>
+          </div>
+        </div>
 
-              {messages.length === 0 && (
-                <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
-                  <p>No messages yet. Start a conversation!</p>
-                </div>
-              )}
-              {messages.map((msg, index) => (
+        {/* Main Content - Calendar View */}
+        <div className="flex-1 flex items-start justify-center overflow-hidden">
+          <div className="w-full max-w-7xl h-full max-h-full">
+            <Calendar username={username} />
+          </div>
+        </div>
+      </div>
+
+      {/* Unified Bottom Sheet Assistant */}
+      <div
+        className={`fixed bottom-0 left-0 right-0 bg-background border-t shadow-[0_-5px_30px_rgba(0,0,0,0.15)] transition-all duration-500 cubic-bezier(0.32, 0.72, 0, 1) z-50 flex flex-col ${
+          isChatOpen ? "h-[75vh]" : "h-auto"
+        } ${getSheetTransform()}`}
+      >
+        {/* Toggle Handle Area */}
+        <div
+          className="w-full flex flex-col items-center justify-center py-2 cursor-pointer hover:bg-muted/50 transition-colors active:bg-muted shrink-0 border-b border-transparent hover:border-border group h-8 relative"
+          onClick={toggleSheet}
+          title={isSheetPeeking ? "Expand or Collapse" : "Open AI Assistant"}
+        >
+          {/* Indicator Line */}
+          <div className="w-12 h-1.5 bg-muted-foreground/20 rounded-full transition-colors group-hover:bg-primary/40 mb-1" />
+
+          {/* Minimized Text (Always Visible) */}
+          {!isSheetPeeking && !isChatOpen && (
+            <span className="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-widest animate-pulse">
+              Click here to Schedule Meetings
+            </span>
+          )}
+        </div>
+
+        {/* Expanded Content: Chat History */}
+        <div
+          className={`flex-1 overflow-hidden flex flex-col bg-muted/5 transition-all duration-300 ${
+            isChatOpen ? "opacity-100" : "opacity-0 hidden"
+          }`}
+        >
+          <div className="px-6 py-2 border-b flex justify-between items-center bg-background/50 backdrop-blur supports-[backdrop-filter]:bg-background/50">
+            <div className="flex items-center gap-2">
+              <Bot className="w-4 h-4 text-primary" />
+              <span className="font-semibold text-sm">
+                AI Scheduling Assistant
+              </span>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setIsChatOpen(false)}
+            >
+              <ChevronDown className="w-4 h-4" />
+            </Button>
+          </div>
+
+          <CardContent
+            className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth"
+            ref={scrollRef}
+          >
+            {messages.length === 0 && (
+              <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
+                <p>Start a conversation to schedule meetings.</p>
+              </div>
+            )}
+            {messages.map((msg, index) => (
+              <div
+                key={index}
+                className={`flex flex-col ${
+                  msg.role === "user" ? "items-end" : "items-start"
+                }`}
+              >
                 <div
-                  key={index}
-                  className={`flex flex-col ${
-                    msg.role === "user" ? "items-end" : "items-start"
+                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${
+                    msg.role === "user"
+                      ? "bg-primary text-primary-foreground rounded-tr-sm"
+                      : "bg-muted text-foreground rounded-tl-sm"
                   }`}
                 >
                   <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${
+                    className={`prose prose-sm max-w-none break-words ${
                       msg.role === "user"
-                        ? "bg-primary text-primary-foreground rounded-tr-sm"
-                        : "bg-muted text-foreground rounded-tl-sm"
+                        ? "text-primary-foreground prose-headings:text-primary-foreground prose-p:text-primary-foreground prose-a:text-primary-foreground prose-strong:text-primary-foreground prose-li:text-primary-foreground"
+                        : "dark:prose-invert"
                     }`}
                   >
-                    <div
-                      className={`prose prose-sm max-w-none break-words ${
-                        msg.role === "user"
-                          ? "text-primary-foreground prose-headings:text-primary-foreground prose-p:text-primary-foreground prose-a:text-primary-foreground prose-strong:text-primary-foreground prose-li:text-primary-foreground"
-                          : "dark:prose-invert"
-                      }`}
-                    >
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          p: ({ node, ...props }) => (
-                            <p className="mb-2 last:mb-0" {...props} />
-                          ),
-                          a: ({ node, ...props }) => (
-                            <a
-                              className="text-blue-500 hover:underline"
-                              target="_blank"
-                              rel="noopener noreferrer"
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        p: ({ node, ...props }) => (
+                          <p className="mb-2 last:mb-0" {...props} />
+                        ),
+                        a: ({ node, ...props }) => (
+                          <a
+                            className="text-blue-500 hover:underline"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            {...props}
+                          />
+                        ),
+                        ul: ({ node, ...props }) => (
+                          <ul className="list-disc pl-4 mb-2" {...props} />
+                        ),
+                        ol: ({ node, ...props }) => (
+                          <ol className="list-decimal pl-4 mb-2" {...props} />
+                        ),
+                        li: ({ node, ...props }) => (
+                          <li className="mb-1" {...props} />
+                        ),
+                        code: ({
+                          node,
+                          inline,
+                          className,
+                          children,
+                          ...props
+                        }) => {
+                          return inline ? (
+                            <code
+                              className="bg-black/10 dark:bg-white/10 rounded px-1 py-0.5"
                               {...props}
-                            />
-                          ),
-                          ul: ({ node, ...props }) => (
-                            <ul className="list-disc pl-4 mb-2" {...props} />
-                          ),
-                          ol: ({ node, ...props }) => (
-                            <ol className="list-decimal pl-4 mb-2" {...props} />
-                          ),
-                          li: ({ node, ...props }) => (
-                            <li className="mb-1" {...props} />
-                          ),
-                          code: ({
-                            node,
-                            inline,
-                            className,
-                            children,
-                            ...props
-                          }) => {
-                            return inline ? (
-                              <code
-                                className="bg-black/10 dark:bg-white/10 rounded px-1 py-0.5"
-                                {...props}
-                              >
-                                {children}
-                              </code>
-                            ) : (
-                              <code
-                                className="block bg-black/10 dark:bg-white/10 rounded p-2 overflow-x-auto"
-                                {...props}
-                              >
-                                {children}
-                              </code>
-                            );
-                          },
-                        }}
-                      >
-                        {msg.content}
-                      </ReactMarkdown>
-                    </div>
-                  </div>
-                  <span className="text-[10px] text-muted-foreground mt-1 px-1">
-                    {new Date(msg.timestamp).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                </div>
-              ))}
-              {isProcessing && (
-                <div className="flex items-start">
-                  <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2">
-                    <div
-                      className="w-2 h-2 bg-foreground/40 rounded-full animate-bounce"
-                      style={{ animationDelay: "0ms" }}
-                    />
-                    <div
-                      className="w-2 h-2 bg-foreground/40 rounded-full animate-bounce"
-                      style={{ animationDelay: "150ms" }}
-                    />
-                    <div
-                      className="w-2 h-2 bg-foreground/40 rounded-full animate-bounce"
-                      style={{ animationDelay: "300ms" }}
-                    />
-                  </div>
-                </div>
-              )}
-            </CardContent>
-
-            {/* Chat Input Area inside Sheet */}
-            <div className="p-4 border-t bg-background">
-              <div className="flex gap-2 max-w-4xl mx-auto">
-                <Input
-                  placeholder="Type your request here..."
-                  className="flex-1"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  autoFocus
-                />
-                <Button
-                  onClick={handleSend}
-                  disabled={isProcessing || !inputValue.trim()}
-                >
-                  Send
-                </Button>
-              </div>
-            </div>
-          </Card>
-        </>
-      )}
-
-      {/* Bottom Input Area (Only visible when chat is closed) */}
-      {!isChatOpen && (
-        <div className="mt-auto pt-6 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-10 pb-6 shadow-[0_-1px_10px_rgba(0,0,0,0.05)]">
-          <div className="max-w-4xl mx-auto space-y-4 px-4">
-            <div className="flex flex-col gap-1">
-              <h2 className="text-lg font-semibold flex items-center gap-2 text-foreground">
-                <Bot className="w-5 h-5 text-primary" />
-                AI Scheduling Assistant
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Select participants first, then describe your meeting request.
-              </p>
-            </div>
-
-            {/* Selected Participants Display */}
-            <div className="min-h-[32px]">
-              {selectedParticipants.length > 0 ? (
-                <div className="flex flex-wrap gap-2 animate-in fade-in slide-in-from-bottom-2">
-                  <span className="text-sm text-muted-foreground self-center mr-2">
-                    Attendees:
-                  </span>
-                  {selectedParticipants.map((p) => (
-                    <Badge
-                      key={p}
-                      variant="secondary"
-                      className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground transition-colors px-3 py-1 flex items-center gap-1"
-                      onClick={() => toggleParticipant(p)}
+                            >
+                              {children}
+                            </code>
+                          ) : (
+                            <code
+                              className="block bg-black/10 dark:bg-white/10 rounded p-2 overflow-x-auto"
+                              {...props}
+                            >
+                              {children}
+                            </code>
+                          );
+                        },
+                      }}
                     >
-                      {p} <X className="w-3 h-3 opacity-50" />
-                    </Badge>
-                  ))}
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
                 </div>
-              ) : (
-                <p className="text-sm text-amber-600/90 font-medium flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4" />
-                  Please select participants to begin scheduling
-                </p>
-              )}
-            </div>
-
-            <div className="flex gap-3 items-stretch">
-              <Button
-                variant={
-                  selectedParticipants.length === 0 ? "default" : "outline"
-                }
-                size="lg"
-                onClick={() => setIsParticipantsOpen(true)}
-                className={`shadow-sm transition-all h-12 ${
-                  selectedParticipants.length === 0
-                    ? "ring-2 ring-primary/20 hover:ring-primary/40"
-                    : ""
-                }`}
-              >
-                <Users className="w-4 h-4 mr-2" />
-                {selectedParticipants.length === 0
-                  ? "Add Participants"
-                  : "Manage Participants"}
-                {selectedParticipants.length > 0 && (
-                  <Badge
-                    variant="secondary"
-                    className="ml-2 bg-primary/10 text-primary border-0"
-                  >
-                    {selectedParticipants.length}
-                  </Badge>
-                )}
-              </Button>
-
-              <div className="flex-1 flex gap-2">
-                <Input
-                  placeholder={
-                    selectedParticipants.length === 0
-                      ? "Select participants to enable chat..."
-                      : "Type your request (e.g., 'Schedule a meeting for tomorrow at 2pm')..."
-                  }
-                  className="flex-1 h-12 text-base shadow-sm"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  disabled={selectedParticipants.length === 0}
-                />
-                <Button
-                  onClick={handleSend}
-                  disabled={
-                    isProcessing ||
-                    !inputValue.trim() ||
-                    selectedParticipants.length === 0
-                  }
-                  size="lg"
-                  className="shadow-sm px-6 h-12"
-                >
-                  <Send className="w-4 h-4 mr-2" />
-                  Send Request
-                </Button>
+                <span className="text-[10px] text-muted-foreground mt-1 px-1">
+                  {new Date(msg.timestamp).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
               </div>
+            ))}
+            {isProcessing && (
+              <div className="flex items-start">
+                <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2">
+                  <div
+                    className="w-2 h-2 bg-foreground/40 rounded-full animate-bounce"
+                    style={{ animationDelay: "0ms" }}
+                  />
+                  <div
+                    className="w-2 h-2 bg-foreground/40 rounded-full animate-bounce"
+                    style={{ animationDelay: "150ms" }}
+                  />
+                  <div
+                    className="w-2 h-2 bg-foreground/40 rounded-full animate-bounce"
+                    style={{ animationDelay: "300ms" }}
+                  />
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </div>
+
+        {/* Always Visible Bottom Section: Input & Context */}
+        <div
+          className={`p-4 pt-2 bg-background relative z-10 shrink-0 flex flex-col gap-3 pb-6 sm:pb-8 transition-opacity duration-300 ${
+            !isSheetPeeking && !isChatOpen ? "opacity-0" : "opacity-100"
+          }`}
+        >
+          {/* Collapsed State Title (Only show when collapsed) */}
+          {!isChatOpen && (
+            <div className="flex items-center gap-2 px-1 animate-in fade-in duration-300">
+              <Bot className="w-5 h-5 text-primary" />
+              <h2 className="text-sm font-semibold">AI Scheduling Assistant</h2>
+              <span className="text-xs text-muted-foreground ml-auto">
+                Swipe up to expand
+              </span>
+            </div>
+          )}
+
+          {/* Selected Participants Chips */}
+          <div className="min-h-[28px] flex items-center">
+            {selectedParticipants.length > 0 ? (
+              <div className="flex flex-wrap gap-2 animate-in fade-in slide-in-from-bottom-1 w-full">
+                {!isChatOpen && (
+                  <span className="text-xs text-muted-foreground mr-1">
+                    With:
+                  </span>
+                )}
+                {selectedParticipants.map((p) => (
+                  <Badge
+                    key={p}
+                    variant="secondary"
+                    className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground transition-colors px-2 py-0.5 text-xs flex items-center gap-1"
+                    onClick={() => toggleParticipant(p)}
+                  >
+                    {p} <X className="w-3 h-3 opacity-50" />
+                  </Badge>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground flex items-center gap-2">
+                <AlertCircle className="w-3 h-3" />
+                Select participants to enable chat
+              </p>
+            )}
+          </div>
+
+          {/* Input Row */}
+          <div className="flex gap-3 items-stretch">
+            <Button
+              variant={
+                selectedParticipants.length === 0 ? "default" : "outline"
+              }
+              size="default"
+              onClick={() => setIsParticipantsOpen(true)}
+              className={`shadow-sm transition-all ${
+                selectedParticipants.length === 0
+                  ? "ring-2 ring-primary/20"
+                  : ""
+              }`}
+            >
+              <Users className="w-4 h-4 mr-2" />
+              <span className="hidden sm:inline">Participants</span>
+              <span className="sm:hidden">Add</span>
+              {selectedParticipants.length > 0 && (
+                <Badge
+                  variant="secondary"
+                  className="ml-2 bg-primary/10 text-primary border-0 h-5 px-1.5"
+                >
+                  {selectedParticipants.length}
+                </Badge>
+              )}
+            </Button>
+
+            <div className="flex-1 flex gap-2">
+              <Input
+                placeholder={
+                  selectedParticipants.length === 0
+                    ? "Select participants..."
+                    : "Type your request..."
+                }
+                className="flex-1 shadow-sm"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={selectedParticipants.length === 0}
+                onFocus={() => {
+                  setIsChatOpen(true);
+                  setIsSheetPeeking(true);
+                }}
+              />
+              <Button
+                onClick={handleSend}
+                disabled={
+                  isProcessing ||
+                  !inputValue.trim() ||
+                  selectedParticipants.length === 0
+                }
+                className="shadow-sm px-4"
+              >
+                <Send className="w-4 h-4" />
+              </Button>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Settings Modal */}
       {isSettingsOpen && (

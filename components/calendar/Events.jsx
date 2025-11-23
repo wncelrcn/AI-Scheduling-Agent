@@ -36,6 +36,8 @@ export function Events({ currentDate, username, children }) {
             timeRange: `${format(startDate, "h:mm a")} - ${format(endDate, "h:mm a")}`,
           };
         });
+        // Sort events by start time
+        formattedEvents.sort((a, b) => a.start - b.start);
         setEvents(formattedEvents);
       }
     } catch (error) {

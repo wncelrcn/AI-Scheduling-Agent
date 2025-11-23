@@ -15,6 +15,7 @@ import {
 import { CalendarHeader } from "./CalendarHeader";
 import { CalendarDay } from "./CalendarDay";
 import { Events } from "./Events";
+import { cn } from "@/lib/utils";
 
 export function Calendar({ username }) {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -68,10 +69,10 @@ export function Calendar({ username }) {
   }, [currentDate]);
 
   return (
-    <div className="flex flex-col h-full w-full max-w-7xl mx-auto bg-background rounded-lg border shadow-sm p-2 sm:p-4">
+    <div className="flex flex-col h-full w-full max-w-[1600px] mx-auto bg-card rounded-xl border shadow-sm">
       <Events currentDate={currentDate} username={username}>
         {({ getEventsForDay, fetchEvents, isLoading }) => (
-          <>
+          <div className="flex flex-col h-full p-4 sm:p-6">
             <CalendarHeader
               currentDate={currentDate}
               onPrevMonth={prevMonth}
@@ -80,45 +81,51 @@ export function Calendar({ username }) {
               onRefresh={fetchEvents}
               isLoading={isLoading}
             />
-            <div className="flex flex-col border rounded-lg overflow-hidden bg-muted flex-1 min-h-0">
+            
+            <div className="flex flex-col border rounded-lg overflow-hidden shadow-inner bg-muted/20 flex-1 min-h-0 ring-1 ring-border">
               {/* Sticky weekday headers */}
-            <div className="grid grid-cols-7 gap-px bg-muted border-b sticky top-0 z-10">
-              {weekDays.map((day) => (
-                <div
-                  key={day}
-                  className="bg-background p-2 text-center text-sm font-medium text-muted-foreground"
-                >
-                  {day}
-                </div>
-              ))}
-            </div>
+              <div className="grid grid-cols-7 border-b bg-muted/50 sticky top-0 z-10">
+                {weekDays.map((day) => (
+                  <div
+                    key={day}
+                    className="py-3 text-center text-xs font-semibold text-muted-foreground uppercase tracking-wider"
+                  >
+                    {day}
+                  </div>
+                ))}
+              </div>
 
-            {/* Scrollable calendar days */}
-            <div
-              ref={gridRef}
-              className="grid grid-cols-7 gap-px bg-muted overflow-y-auto overflow-x-hidden flex-1 min-h-0"
-              style={{ gridTemplateRows: `repeat(${weeks}, minmax(120px, auto))` }}
-            >
-              {calendarDays.map((day, index) => (
-                <div
-                  key={day.toISOString()}
-                  ref={isToday(day) ? todayRef : null}
-                >
-                  <CalendarDay
-                    date={day}
-                    isCurrentMonth={isSameMonth(day, monthStart)}
-                    isToday={isToday(day)}
-                    events={getEventsForDay(day)}
-                    className="bg-background min-h-0"
-                  />
-                </div>
-              ))}
+              {/* Scrollable calendar days */}
+              <div
+                ref={gridRef}
+                className="grid grid-cols-7 gap-px bg-border overflow-y-auto overflow-x-hidden flex-1 min-h-0"
+                style={{ 
+                  gridTemplateRows: `repeat(${weeks}, minmax(180px, auto))`,
+                  // Use 1fr to fill space if content is small, but minmax ensures minimum height
+                }}
+              >
+                {calendarDays.map((day, index) => (
+                  <div
+                    key={day.toISOString()}
+                    ref={isToday(day) ? todayRef : null}
+                    className={cn(
+                      "bg-background min-h-full", 
+                      // Add borders logic if not using gap-px, but gap-px is efficient for grid lines
+                    )}
+                  >
+                    <CalendarDay
+                      date={day}
+                      isCurrentMonth={isSameMonth(day, monthStart)}
+                      isToday={isToday(day)}
+                      events={getEventsForDay(day)}
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
-            </div>
-          </>
+          </div>
         )}
       </Events>
     </div>
   );
 }
-

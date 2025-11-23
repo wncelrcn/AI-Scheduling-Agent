@@ -134,7 +134,8 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
     if (!rejectDialog.proposalId) return;
 
     try {
-      const { error } = await supabase
+      // 1. Update participant_responses
+      const { error: responseError } = await supabase
         .from("participant_responses")
         .update({
           response: "rejected",
@@ -143,12 +144,82 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
         .eq("proposal_id", rejectDialog.proposalId)
         .eq("participant_id", username);
 
-      if (error) throw error;
+      if (responseError) throw responseError;
+
+      // 2. Update meeting_proposals (append feedback)
+      // First fetch existing feedback to append
+      const { data: proposalData, error: fetchError } = await supabase
+        .from("meeting_proposals")
+        .select("rejection_feedback, meeting_title")
+        .eq("proposal_id", rejectDialog.proposalId)
+        .single();
+
+      if (!fetchError && proposalData) {
+        const currentFeedback = proposalData.rejection_feedback || "";
+        const newFeedbackEntry = `[${username}]: ${rejectReason}`;
+        const updatedFeedback = currentFeedback
+          ? `${currentFeedback}\n${newFeedbackEntry}`
+          : newFeedbackEntry;
+
+        await supabase
+          .from("meeting_proposals")
+          .update({ rejection_feedback: updatedFeedback })
+          .eq("proposal_id", rejectDialog.proposalId);
+      }
+
+      // 3. Trigger Rescheduling Agent (REMOVED - now triggered manually by organizer)
+      /*
+      try {
+        await fetch("http://localhost:8000/api/reschedule", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            proposal_id: rejectDialog.proposalId,
+            feedback: rejectReason,
+            username: username,
+          }),
+        });
+      } catch (apiError) {
+        console.error("Failed to trigger rescheduling:", apiError);
+        // Don't block the UI update if the background agent trigger fails
+      }
+      */
 
       setRejectDialog({ open: false, proposalId: null });
       fetchProposals();
     } catch (error) {
       console.error("Error rejecting proposal:", error);
+    }
+  };
+
+  const handleReschedule = async (proposal) => {
+    setIsLoading(true);
+    try {
+      const response = await fetch("http://localhost:8000/api/reschedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          proposal_id: proposal.proposal_id,
+          feedback:
+            proposal.rejection_feedback || "Reschedule requested manually",
+          username: username,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to trigger rescheduling");
+      }
+
+      // Refresh to show updated status
+      fetchProposals();
+    } catch (error) {
+      console.error("Error rescheduling:", error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -440,8 +511,15 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                               <Button
                                 className="w-full sm:w-auto gap-2"
                                 variant="secondary"
+                                onClick={() => handleReschedule(proposal)}
+                                disabled={isLoading}
                               >
-                                <RefreshCcw className="w-4 h-4" />
+                                <RefreshCcw
+                                  className={cn(
+                                    "w-4 h-4",
+                                    isLoading && "animate-spin"
+                                  )}
+                                />
                                 Re-generate Schedule with Feedback
                               </Button>
                             </div>

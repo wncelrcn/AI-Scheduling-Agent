@@ -337,6 +337,10 @@ async def parse_input(state: AgentState):
         extracted_dict = result.model_dump()
         params = extracted_dict.get('parameters', {})
         
+        # If participants are missing in extraction but present in state, inject them
+        if not params.get('participants') and participant_ids:
+            params['participants'] = participant_ids
+            
         # MERGE LOGIC: If confirming, preserve previous parameters (like title) if missing
         if extracted_dict.get('intent') == 'confirm_schedule':
             prev_extracted = state.get('extracted_info', {})
@@ -361,6 +365,10 @@ async def parse_input(state: AgentState):
         if not params.get('duration_minutes'):
             params['duration_minutes'] = DEFAULT_DURATION_MINUTES
             debug_info.append(f"Using default duration: {DEFAULT_DURATION_MINUTES} minutes")
+            
+        # Remove 'participants' from missing_info if we have them in state
+        if 'participants' in extracted_dict.get('missing_info', []) and participant_ids:
+            extracted_dict['missing_info'].remove('participants')
         
         debug_info.append(f"Extracted parameters: {params}")
         

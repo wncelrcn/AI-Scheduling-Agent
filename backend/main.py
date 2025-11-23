@@ -10,6 +10,7 @@ load_dotenv()
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from agents.graph import graph
+from agents.resched import resched_graph
 
 app = FastAPI()
 
@@ -38,6 +39,11 @@ class ChatResponse(BaseModel):
     response: str
     # Return agent state for next turn
     agent_state: Optional[Dict[str, Any]] = None
+
+class RescheduleRequest(BaseModel):
+    proposal_id: str
+    feedback: str
+    username: str
 
 @app.get("/")
 def read_root():
@@ -122,6 +128,30 @@ async def chat_endpoint(request: ChatRequest):
             
     except Exception as e:
         print(f"Error in chat_endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/reschedule")
+async def reschedule_endpoint(request: RescheduleRequest):
+    try:
+        initial_state = {
+            "proposal_id": request.proposal_id,
+            "feedback": request.feedback,
+            "feedback_user": request.username,
+            "messages": [],
+            "debug_info": []
+        }
+        
+        # Invoke the rescheduling graph
+        result = await resched_graph.ainvoke(initial_state)
+        
+        return {
+            "status": "success",
+            "message": "Rescheduling process completed",
+            "new_slot": result.get("proposed_slot"),
+            "debug_info": result.get("debug_info")
+        }
+    except Exception as e:
+        print(f"Error in reschedule_endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
