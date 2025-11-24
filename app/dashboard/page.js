@@ -44,6 +44,7 @@ export default function Dashboard() {
 
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isPreferencesIncomplete, setIsPreferencesIncomplete] = useState(false);
   const [workStart, setWorkStart] = useState("09:00");
   const [workEnd, setWorkEnd] = useState("17:00");
   const [workingDays, setWorkingDays] = useState([
@@ -104,6 +105,18 @@ export default function Dashboard() {
         .single();
 
       if (data) {
+        // Check if preferences are incomplete
+        if (
+          !data.work_start ||
+          !data.work_end ||
+          !data.working_days ||
+          data.working_days.length === 0
+        ) {
+          setIsPreferencesIncomplete(true);
+        } else {
+          setIsPreferencesIncomplete(false);
+        }
+
         if (data.work_start) {
           // Parse timetz string (e.g., "09:00:00+08") back to HH:MM
           const timePart = data.work_start.split("+")[0].split("-")[0]; // Handle + or - offset
@@ -144,6 +157,7 @@ export default function Dashboard() {
 
       if (error) throw error;
       setIsSettingsOpen(false);
+      setIsPreferencesIncomplete(false);
       setShowSuccessModal(true);
     } catch (err) {
       console.error("Error saving preferences:", err);
@@ -319,8 +333,19 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex gap-4">
-            <Button variant="outline" onClick={() => setIsSettingsOpen(true)}>
+            <Button
+              variant={isPreferencesIncomplete ? "default" : "outline"}
+              className={
+                isPreferencesIncomplete
+                  ? "bg-yellow-500 hover:bg-yellow-600 text-white border-yellow-600 animate-pulse"
+                  : ""
+              }
+              onClick={() => setIsSettingsOpen(true)}
+            >
               Set Working Hours
+              {isPreferencesIncomplete && (
+                <AlertCircle className="ml-2 h-4 w-4" />
+              )}
             </Button>
             <Button
               variant="outline"
@@ -333,6 +358,30 @@ export default function Dashboard() {
             </Button>
           </div>
         </div>
+
+        {/* Preferences Alert Banner */}
+        {isPreferencesIncomplete && (
+          <div className="mb-6 bg-yellow-500/10 border border-yellow-500/50 text-yellow-700 dark:text-yellow-400 px-4 py-3 rounded-lg flex items-center justify-between animate-in slide-in-from-top-2">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="h-5 w-5 flex-shrink-0" />
+              <div>
+                <p className="font-medium">Complete your profile</p>
+                <p className="text-sm opacity-90">
+                  Set your working hours and days to help the AI schedule
+                  meetings effectively.
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="ml-4 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-700 dark:text-yellow-300 border-yellow-500/20 whitespace-nowrap"
+              onClick={() => setIsSettingsOpen(true)}
+            >
+              Set Now
+            </Button>
+          </div>
+        )}
 
         {/* Main Content - Calendar View */}
         <div className="flex-1 flex items-start justify-center overflow-hidden">

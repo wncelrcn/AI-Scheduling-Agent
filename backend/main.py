@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import os
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # Load environment variables
 load_dotenv()
@@ -11,6 +12,11 @@ load_dotenv()
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from agents.graph import graph
 from agents.resched import resched_graph
+
+# Initialize Supabase Client
+url: str = os.environ.get("SUPABASE_URL")
+key: str = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(url, key)
 
 app = FastAPI()
 
@@ -44,6 +50,9 @@ class RescheduleRequest(BaseModel):
     proposal_id: str
     feedback: str
     username: str
+
+class FinalizeRequest(BaseModel):
+    proposal_id: str
 
 @app.get("/")
 def read_root():
@@ -152,6 +161,65 @@ async def reschedule_endpoint(request: RescheduleRequest):
         }
     except Exception as e:
         print(f"Error in reschedule_endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/finalize_meeting")
+async def finalize_meeting_endpoint(request: FinalizeRequest):
+    try:
+        # 1. Fetch the proposal
+        proposal_response = supabase.table("meeting_proposals").select("*").eq("proposal_id", request.proposal_id).single().execute()
+        proposal = proposal_response.data
+        
+        if not proposal:
+            raise HTTPException(status_code=404, detail="Proposal not found")
+            
+        # 2. Update status to finalized (not confirmed, to match check constraint)
+        # Constraint allows: 'pending', 'accepted', 'rejected', 'finalized', 'cancelled'
+        supabase.table("meeting_proposals").update({"status": "finalized"}).eq("proposal_id", request.proposal_id).execute()
+        
+        # 3. Fetch participant responses to see who accepted
+        responses_result = supabase.table("participant_responses").select("participant_id, response").eq("proposal_id", request.proposal_id).execute()
+        
+        # Identify who should get the calendar event
+        # Organizer + Participants who accepted (or maybe everyone? User said "not to those who rejected")
+        attendees = [proposal["organizer_id"]]
+        
+        for resp in responses_result.data:
+            if resp["response"] == "accepted":
+                attendees.append(resp["participant_id"])
+        
+        # Deduplicate just in case
+        attendees = list(set(attendees))
+        
+        # 4. Insert into meetings table for each attendee
+        # Table structure: meeting_id (auto), meeting_name, user, start_meeting, end_meeting
+        
+        meetings_to_insert = []
+        for user in attendees:
+            meetings_to_insert.append({
+                "meeting_name": proposal["meeting_title"] or "Untitled Meeting",
+                "user": user,
+                "start_meeting": proposal["proposed_start"],
+                "end_meeting": proposal["proposed_end"]
+            })
+            
+        if meetings_to_insert:
+            supabase.table("meetings").insert(meetings_to_insert).execute()
+            
+        # 5. Optional: Cleanup (User requested clearing out proposal and responses)
+        # Delete participant responses first (due to FK)
+        supabase.table("participant_responses").delete().eq("proposal_id", request.proposal_id).execute()
+        # Delete proposal
+        supabase.table("meeting_proposals").delete().eq("proposal_id", request.proposal_id).execute()
+            
+        return {
+            "status": "success",
+            "message": "Meeting finalized and added to calendars. Proposal cleanup complete.",
+            "attendees": attendees
+        }
+
+    except Exception as e:
+        print(f"Error in finalize_meeting_endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

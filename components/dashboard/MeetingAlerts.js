@@ -223,6 +223,51 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
     }
   };
 
+  const handlePushThrough = async (proposal) => {
+    setIsLoading(true);
+    try {
+      const response = await fetch("http://localhost:8000/api/finalize_meeting", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          proposal_id: proposal.proposal_id,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to finalize meeting");
+      }
+      
+      const data = await response.json();
+      alert(`Meeting confirmed with ${data.attendees.length} attendees!`);
+
+      // Refresh to show updated status
+      fetchProposals();
+    } catch (error) {
+      console.error("Error finalizing meeting:", error);
+      alert("Failed to finalize meeting. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const calculateMajority = (responses) => {
+    if (!responses || responses.length === 0) return false;
+    const totalParticipants = responses.length;
+    const acceptedParticipants = responses.filter((r) => r.response === "accepted").length;
+    
+    // Total people involved = Participants + Organizer (1)
+    const totalPeople = totalParticipants + 1;
+    
+    // Total accepted = Accepted Participants + Organizer (1)
+    const totalAccepted = acceptedParticipants + 1;
+    
+    // Majority is > 50%
+    return totalAccepted > totalPeople / 2;
+  };
+
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     return new Intl.DateTimeFormat("en-US", {
@@ -506,8 +551,8 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                           {/* Re-generate Schedule Button if any rejection */}
                           {proposal.participant_responses?.some(
                             (r) => r.response === "rejected"
-                          ) && (
-                            <div className="pt-2">
+                          ) && proposal.status === "pending" && (
+                            <div className="pt-2 flex flex-wrap gap-2">
                               <Button
                                 className="w-full sm:w-auto gap-2"
                                 variant="secondary"
@@ -520,8 +565,20 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                     isLoading && "animate-spin"
                                   )}
                                 />
-                                Re-generate Schedule with Feedback
+                                Re-generate Schedule
                               </Button>
+                              
+                              {calculateMajority(proposal.participant_responses) && (
+                                <Button
+                                  className="w-full sm:w-auto gap-2 bg-orange-500 hover:bg-orange-600 text-white"
+                                  variant="default"
+                                  onClick={() => handlePushThrough(proposal)}
+                                  disabled={isLoading}
+                                >
+                                  <Users className="w-4 h-4" />
+                                  Push Through (Majority Accepted)
+                                </Button>
+                              )}
                             </div>
                           )}
                         </div>
