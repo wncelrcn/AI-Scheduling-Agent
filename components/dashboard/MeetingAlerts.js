@@ -244,20 +244,20 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
       const response = await fetch(
         "http://localhost:8000/api/finalize_meeting",
         {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            proposal_id: proposal.proposal_id,
-          }),
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          proposal_id: proposal.proposal_id,
+        }),
         }
       );
 
       if (!response.ok) {
         throw new Error("Failed to finalize meeting");
       }
-
+      
       const data = await response.json();
 
       // Show confirmation modal instead of alert
@@ -388,9 +388,9 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
 
     // Check if any priority participant has rejected
     const priorityRejection = responses.some(
-      (r) =>
-        r.response === "rejected" &&
-        priorityParticipants &&
+      (r) => 
+        r.response === "rejected" && 
+        priorityParticipants && 
         priorityParticipants.includes(r.participant_id)
     );
 
@@ -400,13 +400,13 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
     const acceptedParticipants = responses.filter(
       (r) => r.response === "accepted"
     ).length;
-
+    
     // Total people involved = Participants + Organizer (1)
     const totalPeople = totalParticipants + 1;
-
+    
     // Total accepted = Accepted Participants + Organizer (1)
     const totalAccepted = acceptedParticipants + 1;
-
+    
     // Majority is > 50%
     return totalAccepted > totalPeople / 2;
   };
@@ -609,7 +609,7 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                           <div className="flex items-start gap-3">
                             <div className="rounded-md bg-foreground/10 p-2 shrink-0">
                               <CalendarIcon className="w-5 h-5 text-foreground" />
-                            </div>
+                        </div>
                             <div className="flex-1 min-w-0">
                               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
                                 Scheduled Time
@@ -670,7 +670,7 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                 <XCircle className="w-4 h-4" />
                                 <span className="font-medium">
                                   You declined this meeting
-                                </span>
+                          </span>
                               </div>
                             )}
                           </div>
@@ -712,8 +712,8 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                 <CalendarIcon className="w-4 h-4 text-foreground" />
                               </div>
                               <CardTitle className="text-xl font-bold">
-                                {proposal.meeting_title || "Untitled Meeting"}
-                              </CardTitle>
+                              {proposal.meeting_title || "Untitled Meeting"}
+                            </CardTitle>
                             </div>
                             <CardDescription className="flex items-center gap-2 text-base">
                               <Clock className="w-4 h-4" />
@@ -731,7 +731,7 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                 Needs Review
                               </Badge>
                             ) : proposal.status === "finalized" ? (
-                              <Badge
+                          <Badge
                                 variant="secondary"
                                 className="px-3 py-1.5"
                               >
@@ -742,9 +742,9 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                               <Badge
                                 variant="secondary"
                                 className="px-3 py-1.5 font-semibold"
-                              >
-                                {formatStatus(proposal.status)}
-                              </Badge>
+                          >
+                            {formatStatus(proposal.status)}
+                          </Badge>
                             )}
                           </div>
                         </div>
@@ -864,7 +864,7 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                 return (
                                   <>
                                     {slots.length > 0 && (
-                                      <div className="space-y-4">
+                        <div className="space-y-4">
                                         {slots.map((slot, idx) => (
                                           <div
                                             key={idx}
@@ -1085,13 +1085,13 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                 <div className="flex items-center justify-between">
                                   <div className="flex items-center gap-3">
                                     <div className="rounded-full bg-foreground/10 p-2">
-                                      {resp.response === "accepted" && (
+                                    {resp.response === "accepted" && (
                                         <CheckCircle2 className="w-5 h-5 text-foreground" />
-                                      )}
-                                      {resp.response === "rejected" && (
+                                    )}
+                                    {resp.response === "rejected" && (
                                         <XCircle className="w-5 h-5 text-foreground" />
-                                      )}
-                                      {resp.response === "pending" && (
+                                    )}
+                                    {resp.response === "pending" && (
                                         <Clock className="w-5 h-5 text-foreground" />
                                       )}
                                     </div>
@@ -1101,13 +1101,13 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                       </span>
                                     </div>
                                   </div>
-                                  <Badge
+                                    <Badge
                                     variant="secondary"
                                     className="font-semibold capitalize px-3 py-1"
-                                  >
-                                    {formatStatus(resp.response)}
-                                  </Badge>
-                                </div>
+                                    >
+                                      {formatStatus(resp.response)}
+                                    </Badge>
+                                  </div>
                                 {resp.response === "rejected" &&
                                   resp.feedback && (
                                     <div className="p-3 bg-muted rounded-md border border-border">
@@ -1116,14 +1116,14 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                         <div className="flex-1">
                                           <span className="font-semibold block text-xs uppercase tracking-wider mb-1">
                                             Feedback
-                                          </span>
+                                    </span>
                                           <p className="text-sm">
                                             {resp.feedback}
                                           </p>
                                         </div>
                                       </div>
-                                    </div>
-                                  )}
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -1140,39 +1140,39 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                 </div>
 
                                 <div className="flex flex-wrap gap-3">
-                                  <Button
+                              <Button
                                     variant="outline"
                                     className="flex-1 sm:flex-none gap-2 font-semibold"
-                                    onClick={() => handleReschedule(proposal)}
-                                    disabled={isLoading}
-                                  >
-                                    <RefreshCcw
-                                      className={cn(
-                                        "w-4 h-4",
-                                        isLoading && "animate-spin"
-                                      )}
-                                    />
+                                onClick={() => handleReschedule(proposal)}
+                                disabled={isLoading}
+                              >
+                                <RefreshCcw
+                                  className={cn(
+                                    "w-4 h-4",
+                                    isLoading && "animate-spin"
+                                  )}
+                                />
                                     Get Alternative Times
-                                  </Button>
-
+                              </Button>
+                              
                                   {calculateMajority(
                                     proposal.participant_responses,
                                     proposal.priority_participants
                                   ) ? (
-                                    <Button
+                                <Button
                                       className="flex-1 sm:flex-none gap-2 font-semibold"
                                       onClick={() =>
                                         handlePushThrough(proposal)
                                       }
-                                      disabled={isLoading}
-                                    >
+                                  disabled={isLoading}
+                                >
                                       <CheckCircle2 className="w-4 h-4" />
                                       Finalize (Majority Approved)
-                                    </Button>
-                                  ) : (
-                                    proposal.participant_responses?.some(
-                                      (r) =>
-                                        r.response === "rejected" &&
+                                </Button>
+                              ) : (
+                                proposal.participant_responses?.some(
+                                  (r) => 
+                                    r.response === "rejected" && 
                                         proposal.priority_participants?.includes(
                                           r.participant_id
                                         )
@@ -1189,12 +1189,12 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                                             meeting.
                                           </p>
                                         </div>
-                                      </div>
-                                    )
-                                  )}
+                                  </div>
+                                )
+                              )}
                                 </div>
-                              </div>
-                            )}
+                            </div>
+                          )}
                         </div>
                       </CardContent>
                     </Card>
@@ -1364,7 +1364,7 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
             </>
           )}
         </DialogContent>
-      </Dialog>
+    </Dialog>
 
       {/* Reschedule Confirmation Dialog */}
       <Dialog
