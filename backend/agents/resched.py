@@ -16,6 +16,12 @@ from agents.graph import (
     fetch_working_hours_node,
     find_slots_node,
     select_best_slot,
+    rank_slots,
+    suggest_next_days,
+    suggest_time_adjustments,
+    suggest_partial_attendance,
+    suggest_duration_flexibility,
+    parse_time_to_object,
     TIMEZONE
 )
 
@@ -50,6 +56,8 @@ class ReschedState(TypedDict):
     proposal_id: str
     feedback: str
     feedback_user: str
+    reschedule_status: str  # Track status (suggested, confirmed, needs_feedback)
+    edge_case_type: Optional[str]  # Track which edge case was detected
 
 # Node: Fetch Proposal Details
 async def fetch_proposal_node(state: ReschedState):
@@ -200,55 +208,137 @@ async def process_feedback_node(state: ReschedState):
         debug_info.append(f"ERROR processing feedback: {str(e)}")
         return {"debug_info": debug_info}
 
-# Node: Update Proposal
-async def update_proposal_node(state: ReschedState):
+# Node: Suggest to Organizer (replaces update_proposal_node)
+async def suggest_to_organizer_node(state: ReschedState):
     """
-    Update the proposal with the new best slot found.
+    Store suggested slots for organizer approval instead of automatically updating.
+    Sets status to 'awaiting_organizer_approval'.
     """
     proposed_slots = state.get("proposed_slots", [])
+    alternatives = state.get("alternatives")
     proposal_id = state.get("proposal_id")
     debug_info = state.get("debug_info", [])
-    
-    if not proposed_slots:
-        debug_info.append("No valid slots found to reschedule.")
-        # We might want to set status to 'failed' or 'manual_intervention'
-        # For now, leave as is or mark special status
-        return {"debug_info": debug_info}
-        
-    # Select the top slot
-    best_slot = proposed_slots[0]
+    edge_case_type = state.get("edge_case_type")
     
     try:
         # Fetch current iteration count
-        current_proposal = supabase.table("meeting_proposals").select("iteration_count, rejection_feedback").eq("proposal_id", proposal_id).single().execute()
+        current_proposal = supabase.table("meeting_proposals").select("iteration_count").eq("proposal_id", proposal_id).single().execute()
         current_count = current_proposal.data.get("iteration_count", 0)
         
-        # Update proposal
-        update_data = {
-            "proposed_start": best_slot["start"],
-            "proposed_end": best_slot["end"],
-            "status": "pending",
-            "iteration_count": current_count + 1,
-            "reasoning": f"Rescheduled automatically based on feedback: {', '.join(best_slot.get('ranking_reasons', []))}"
-        }
+        if not proposed_slots and not alternatives:
+            # No slots and no alternatives - critical failure
+            debug_info.append("No valid slots or alternatives found to reschedule.")
+            update_data = {
+                "status": "awaiting_organizer_approval",
+                "iteration_count": current_count + 1,
+                "suggested_slots": json.dumps({"error": "No available slots found", "edge_case": edge_case_type}),
+                "reasoning": "Rescheduling failed - no available slots. Manual intervention needed."
+            }
+        elif not proposed_slots and alternatives:
+            # No perfect slots but have alternatives
+            debug_info.append("No perfect slots, storing alternatives for organizer review")
+            update_data = {
+                "status": "awaiting_organizer_approval",
+                "iteration_count": current_count + 1,
+                "suggested_slots": json.dumps({
+                    "slots": [],
+                    "alternatives": alternatives,
+                    "edge_case": edge_case_type
+                }),
+                "reasoning": "No perfect match found. Alternatives suggested for organizer approval."
+            }
+        else:
+            # Have valid slots - store top 3 for organizer to choose
+            debug_info.append(f"Storing {len(proposed_slots)} suggested slots for organizer approval")
+            slots_to_store = []
+            for i, slot in enumerate(proposed_slots[:3], 1):
+                slots_to_store.append({
+                    "index": i,
+                    "start": slot["start"],
+                    "end": slot["end"],
+                    "score": slot.get("ranking_score", 0),
+                    "reasons": slot.get("ranking_reasons", []),
+                    "available_participants": slot.get("available_participants", [])
+                })
+            
+            update_data = {
+                "status": "awaiting_organizer_approval",
+                "iteration_count": current_count + 1,
+                "suggested_slots": json.dumps({
+                    "slots": slots_to_store,
+                    "alternatives": alternatives if alternatives else None,
+                    "edge_case": edge_case_type
+                }),
+                "reasoning": f"Rescheduling suggestions ready. Top slot: {', '.join(proposed_slots[0].get('ranking_reasons', []))}"
+            }
         
+        # Update proposal with suggestions
         supabase.table("meeting_proposals").update(update_data).eq("proposal_id", proposal_id).execute()
-        debug_info.append(f"Updated proposal {proposal_id} to new time: {best_slot['start']}")
+        debug_info.append(f"Updated proposal {proposal_id} status to 'awaiting_organizer_approval'")
         
-        # Reset participant responses to pending (except maybe the one who just rejected? No, they need to accept new time)
-        # Actually everyone needs to accept the NEW time.
-        supabase.table("participant_responses").update({"response": "pending", "feedback": None}).eq("proposal_id", proposal_id).execute()
-        debug_info.append("Reset all participant responses to pending")
+        # Keep participant responses as-is (they'll be reset when organizer confirms)
         
         return {
             "debug_info": debug_info,
-            "proposed_slot": best_slot
+            "reschedule_status": "suggested"
         }
         
     except Exception as e:
-        logger.error(f"Error updating proposal: {e}")
-        debug_info.append(f"ERROR updating proposal: {str(e)}")
-        return {"debug_info": debug_info}
+        logger.error(f"Error storing suggestions: {e}")
+        debug_info.append(f"ERROR storing suggestions: {str(e)}")
+        return {"debug_info": debug_info, "reschedule_status": "error"}
+
+# Node: Generate alternatives when no perfect slots found
+def generate_alternatives(state: ReschedState) -> dict:
+    """
+    Generate comprehensive alternatives when no perfect slots are found.
+    Returns dict with different types of suggestions.
+    """
+    alternatives = {
+        "next_days": suggest_next_days(state, num_days=3),
+        "time_adjustments": suggest_time_adjustments(state),
+        "partial_attendance": suggest_partial_attendance(state),
+        "duration_flexibility": suggest_duration_flexibility(state)
+    }
+    
+    return alternatives
+
+# Node: Respond with edge case handling
+async def respond_node(state: ReschedState):
+    """
+    Prepare response message for organizer with suggestions and edge case info.
+    This doesn't send messages but prepares status information.
+    """
+    debug_info = state.get("debug_info", [])
+    proposed_slots = state.get("proposed_slots", [])
+    alternatives = state.get("alternatives")
+    edge_case_type = state.get("edge_case_type")
+    
+    # Detect edge cases from debug_info
+    past_time_detected = any("PAST TIME" in log for log in debug_info)
+    before_hours_detected = any("BEFORE WORKING HOURS" in log for log in debug_info)
+    after_hours_detected = any("AFTER WORKING HOURS" in log for log in debug_info)
+    non_working_day_detected = any("NON-WORKING DAY" in log for log in debug_info)
+    
+    # Set edge case type if detected
+    updated_edge_case = edge_case_type
+    if past_time_detected:
+        updated_edge_case = "past_time"
+    elif before_hours_detected:
+        updated_edge_case = "before_working_hours"
+    elif after_hours_detected:
+        updated_edge_case = "after_working_hours"
+    elif non_working_day_detected:
+        updated_edge_case = "non_working_day"
+    elif not proposed_slots and not alternatives:
+        updated_edge_case = "no_availability"
+    
+    debug_info.append(f"Response prepared. Edge case: {updated_edge_case}, Slots: {len(proposed_slots)}, Has alternatives: {alternatives is not None}")
+    
+    return {
+        "debug_info": debug_info,
+        "edge_case_type": updated_edge_case
+    }
 
 # Define the Rescheduling Graph
 workflow = StateGraph(ReschedState)
@@ -259,19 +349,21 @@ workflow.add_node("fetch_calendars", fetch_calendars_node)
 workflow.add_node("fetch_working_hours", fetch_working_hours_node)
 workflow.add_node("find_slots", find_slots_node)
 workflow.add_node("select_best_slot", select_best_slot)
-workflow.add_node("update_proposal", update_proposal_node)
+workflow.add_node("suggest_to_organizer", suggest_to_organizer_node)
+workflow.add_node("respond", respond_node)
 
 # Set entry point
 workflow.set_entry_point("fetch_proposal")
 
-# Define flow
+# Define flow: fetch -> process -> calendars -> hours -> slots -> select -> respond -> suggest -> END
 workflow.add_edge("fetch_proposal", "process_feedback")
 workflow.add_edge("process_feedback", "fetch_calendars")
 workflow.add_edge("fetch_calendars", "fetch_working_hours")
 workflow.add_edge("fetch_working_hours", "find_slots")
 workflow.add_edge("find_slots", "select_best_slot")
-workflow.add_edge("select_best_slot", "update_proposal")
-workflow.add_edge("update_proposal", END)
+workflow.add_edge("select_best_slot", "respond")
+workflow.add_edge("respond", "suggest_to_organizer")
+workflow.add_edge("suggest_to_organizer", END)
 
 # Compile
 resched_graph = workflow.compile()

@@ -52,6 +52,16 @@ class RescheduleRequest(BaseModel):
     feedback: str
     username: str
 
+class ConfirmRescheduleRequest(BaseModel):
+    proposal_id: str
+    selected_slot_index: int
+    username: str
+
+class RejectRescheduleRequest(BaseModel):
+    proposal_id: str
+    organizer_feedback: str
+    username: str
+
 class FinalizeRequest(BaseModel):
     proposal_id: str
 
@@ -144,6 +154,9 @@ async def chat_endpoint(request: ChatRequest):
 
 @app.post("/api/reschedule")
 async def reschedule_endpoint(request: RescheduleRequest):
+    """
+    Trigger rescheduling agent. Now returns structured suggestions for organizer approval.
+    """
     try:
         initial_state = {
             "proposal_id": request.proposal_id,
@@ -156,14 +169,146 @@ async def reschedule_endpoint(request: RescheduleRequest):
         # Invoke the rescheduling graph
         result = await resched_graph.ainvoke(initial_state)
         
+        # Fetch the updated proposal to get suggested_slots
+        proposal_response = supabase.table("meeting_proposals").select("suggested_slots, status, reasoning").eq("proposal_id", request.proposal_id).single().execute()
+        proposal = proposal_response.data
+        
         return {
             "status": "success",
-            "message": "Rescheduling process completed",
-            "new_slot": result.get("proposed_slot"),
+            "message": "Rescheduling suggestions prepared for organizer approval",
+            "suggested_slots": proposal.get("suggested_slots"),
+            "proposal_status": proposal.get("status"),
+            "reasoning": proposal.get("reasoning"),
+            "reschedule_status": result.get("reschedule_status"),
+            "edge_case_type": result.get("edge_case_type"),
             "debug_info": result.get("debug_info")
         }
     except Exception as e:
         print(f"Error in reschedule_endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/confirm_reschedule")
+async def confirm_reschedule_endpoint(request: ConfirmRescheduleRequest):
+    """
+    Organizer confirms a suggested reschedule slot.
+    """
+    try:
+        # 1. Fetch the proposal to verify organizer and get suggested_slots
+        proposal_response = supabase.table("meeting_proposals").select("*").eq("proposal_id", request.proposal_id).single().execute()
+        proposal = proposal_response.data
+        
+        if not proposal:
+            raise HTTPException(status_code=404, detail="Proposal not found")
+        
+        # 2. Verify the username is the organizer
+        if proposal["organizer_id"] != request.username:
+            raise HTTPException(status_code=403, detail="Only the organizer can confirm reschedule")
+        
+        # 3. Parse suggested_slots
+        import json
+        suggested_slots_data = proposal.get("suggested_slots")
+        if isinstance(suggested_slots_data, str):
+            suggested_slots_data = json.loads(suggested_slots_data)
+        
+        if not suggested_slots_data or "slots" not in suggested_slots_data:
+            raise HTTPException(status_code=400, detail="No suggested slots available")
+        
+        slots = suggested_slots_data.get("slots", [])
+        
+        if not slots:
+            raise HTTPException(status_code=400, detail="No valid slots to confirm")
+        
+        # 4. Validate selected_slot_index
+        if request.selected_slot_index < 1 or request.selected_slot_index > len(slots):
+            raise HTTPException(status_code=400, detail=f"Invalid slot index. Must be between 1 and {len(slots)}")
+        
+        # 5. Get the selected slot (convert 1-based to 0-based index)
+        selected_slot = slots[request.selected_slot_index - 1]
+        
+        # 6. Update the proposal with the confirmed slot
+        current_count = proposal.get("iteration_count", 1)
+        update_data = {
+            "proposed_start": selected_slot["start"],
+            "proposed_end": selected_slot["end"],
+            "status": "pending",
+            "iteration_count": current_count + 1,
+            "reasoning": f"Organizer confirmed reschedule. {', '.join(selected_slot.get('reasons', []))}",
+            "suggested_slots": None,  # Clear suggestions after confirmation
+            "organizer_feedback": None  # Clear feedback
+        }
+        
+        supabase.table("meeting_proposals").update(update_data).eq("proposal_id", request.proposal_id).execute()
+        
+        # 7. Reset all participant responses to pending
+        supabase.table("participant_responses").update({"response": "pending", "feedback": None}).eq("proposal_id", request.proposal_id).execute()
+        
+        return {
+            "status": "success",
+            "message": "Reschedule confirmed. Participants have been notified.",
+            "confirmed_slot": selected_slot,
+            "proposal_id": request.proposal_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in confirm_reschedule_endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/reject_reschedule")
+async def reject_reschedule_endpoint(request: RejectRescheduleRequest):
+    """
+    Organizer rejects all suggested slots and provides feedback for re-rescheduling.
+    """
+    try:
+        # 1. Fetch the proposal to verify organizer
+        proposal_response = supabase.table("meeting_proposals").select("organizer_id, status").eq("proposal_id", request.proposal_id).single().execute()
+        proposal = proposal_response.data
+        
+        if not proposal:
+            raise HTTPException(status_code=404, detail="Proposal not found")
+        
+        # 2. Verify the username is the organizer
+        if proposal["organizer_id"] != request.username:
+            raise HTTPException(status_code=403, detail="Only the organizer can reject reschedule")
+        
+        # 3. Store organizer feedback
+        supabase.table("meeting_proposals").update({
+            "organizer_feedback": request.organizer_feedback,
+            "suggested_slots": None  # Clear previous suggestions
+        }).eq("proposal_id", request.proposal_id).execute()
+        
+        # 4. Re-trigger rescheduling agent with organizer's feedback
+        initial_state = {
+            "proposal_id": request.proposal_id,
+            "feedback": request.organizer_feedback,
+            "feedback_user": request.username,
+            "messages": [],
+            "debug_info": []
+        }
+        
+        # Invoke the rescheduling graph again
+        result = await resched_graph.ainvoke(initial_state)
+        
+        # 5. Fetch the updated proposal to get new suggested_slots
+        updated_proposal_response = supabase.table("meeting_proposals").select("suggested_slots, status, reasoning").eq("proposal_id", request.proposal_id).single().execute()
+        updated_proposal = updated_proposal_response.data
+        
+        return {
+            "status": "success",
+            "message": "New rescheduling suggestions generated based on your feedback",
+            "suggested_slots": updated_proposal.get("suggested_slots"),
+            "proposal_status": updated_proposal.get("status"),
+            "reasoning": updated_proposal.get("reasoning"),
+            "reschedule_status": result.get("reschedule_status"),
+            "edge_case_type": result.get("edge_case_type"),
+            "debug_info": result.get("debug_info")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in reject_reschedule_endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/finalize_meeting")
