@@ -27,6 +27,7 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
+  Star,
 } from "lucide-react";
 
 import { MeetingAlerts } from "@/components/dashboard/MeetingAlerts";
@@ -60,6 +61,7 @@ export default function Dashboard() {
   // Participants State
   const [availableUsers, setAvailableUsers] = useState([]);
   const [selectedParticipants, setSelectedParticipants] = useState([]);
+  const [selectedPriorityParticipants, setSelectedPriorityParticipants] = useState([]);
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
 
   // Meeting Alerts State
@@ -183,8 +185,25 @@ export default function Dashboard() {
       setSelectedParticipants(
         selectedParticipants.filter((p) => p !== userName)
       );
+      // Also remove from priority if removed from selection
+      if (selectedPriorityParticipants.includes(userName)) {
+        setSelectedPriorityParticipants(
+          selectedPriorityParticipants.filter((p) => p !== userName)
+        );
+      }
     } else {
       setSelectedParticipants([...selectedParticipants, userName]);
+    }
+  };
+
+  const togglePriority = (userName, e) => {
+    e.stopPropagation(); // Prevent toggling participant selection
+    if (selectedPriorityParticipants.includes(userName)) {
+      setSelectedPriorityParticipants(
+        selectedPriorityParticipants.filter((p) => p !== userName)
+      );
+    } else {
+      setSelectedPriorityParticipants([...selectedPriorityParticipants, userName]);
     }
   };
 
@@ -247,7 +266,9 @@ export default function Dashboard() {
           message: userMessage.content,
           username: username,
           history: history,
+          history: history,
           participants: selectedParticipants,
+          priority_participants: selectedPriorityParticipants,
           previous_state: agentState, // Pass previous agent state for continuity
         }),
       });
@@ -581,7 +602,11 @@ export default function Dashboard() {
                     className="cursor-pointer hover:bg-destructive hover:text-destructive-foreground transition-colors px-2 py-0.5 text-xs flex items-center gap-1"
                     onClick={() => toggleParticipant(p)}
                   >
-                    {p} <X className="w-3 h-3 opacity-50" />
+                    {p} 
+                    {selectedPriorityParticipants.includes(p) && (
+                      <Star className="w-3 h-3 fill-yellow-500 text-yellow-500 ml-0.5" />
+                    )}
+                    <X className="w-3 h-3 opacity-50 ml-1" />
                   </Badge>
                 ))}
               </div>
@@ -752,29 +777,46 @@ export default function Dashboard() {
               availableUsers.map((user) => (
                 <div
                   key={user.name}
-                  className="flex items-start space-x-3 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                  className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
                 >
-                  <Checkbox
-                    id={`user-${user.name}`}
-                    checked={selectedParticipants.includes(user.name)}
-                    onCheckedChange={() => toggleParticipant(user.name)}
-                    className="mt-1"
-                  />
-                  <div className="grid gap-1.5 leading-none">
-                    <Label
-                      htmlFor={`user-${user.name}`}
-                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
-                    >
-                      {user.name}
-                    </Label>
-                    <p className="text-xs text-muted-foreground">
-                      {formatWorkingHours(
-                        user.work_start,
-                        user.work_end,
-                        user.working_days
-                      )}
-                    </p>
+                  <div className="flex items-start space-x-3 flex-1">
+                    <Checkbox
+                      id={`user-${user.name}`}
+                      checked={selectedParticipants.includes(user.name)}
+                      onCheckedChange={() => toggleParticipant(user.name)}
+                      className="mt-1"
+                    />
+                    <div className="grid gap-1.5 leading-none">
+                      <Label
+                        htmlFor={`user-${user.name}`}
+                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                      >
+                        {user.name}
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        {formatWorkingHours(
+                          user.work_start,
+                          user.work_end,
+                          user.working_days
+                        )}
+                      </p>
+                    </div>
                   </div>
+                  
+                  {/* Priority Toggle */}
+                  {selectedParticipants.includes(user.name) && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={(e) => togglePriority(user.name, e)}
+                      title={selectedPriorityParticipants.includes(user.name) ? "Unmark as Priority" : "Mark as Priority"}
+                    >
+                      <Star 
+                        className={`w-4 h-4 ${selectedPriorityParticipants.includes(user.name) ? "fill-yellow-500 text-yellow-500" : "text-muted-foreground"}`} 
+                      />
+                    </Button>
+                  )}
                 </div>
               ))
             )}

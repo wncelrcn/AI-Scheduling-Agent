@@ -214,6 +214,7 @@ class AgentState(TypedDict):
     # Core identifiers (names are the primary keys in users table)
     organizer_id: str  # The username (same as users.name)
     participant_ids: List[str]  # Selected participants (names, same as users.name)
+    priority_participant_ids: List[str]  # Participants marked as priority
     
     # Extracted from user input
     extracted_info: Optional[dict]  # Parsed constraints (duration, time, date)
@@ -774,7 +775,9 @@ async def confirm_schedule_node(state: AgentState):
     2. Or ask the user to re-request the meeting
     """
     organizer_id = state.get('organizer_id')
+    organizer_id = state.get('organizer_id')
     participant_ids = state.get('participant_ids', [])
+    priority_participant_ids = state.get('priority_participant_ids', [])
     proposed_slots = state.get('proposed_slots', [])
     extracted_info = state.get('extracted_info', {})
     debug_info = state.get('debug_info', [])
@@ -815,15 +818,17 @@ async def confirm_schedule_node(state: AgentState):
         meeting_title = params.get('title', 'Meeting')
         reasoning = ', '.join(selected_slot.get('ranking_reasons', ['Best available time']))
         
-        # Prepare proposal data
+        # Create the proposal record
         proposal_data = {
+            "meeting_title": params.get('title', 'Untitled Meeting'),
             "organizer_id": organizer_id,
-            "participant_ids": participant_ids,  # PostgreSQL TEXT[] array
+            "participant_ids": participant_ids,
+            "priority_participants": priority_participant_ids,
             "proposed_start": selected_slot['start'],
             "proposed_end": selected_slot['end'],
-            "meeting_title": meeting_title,
-            "reasoning": reasoning,
             "status": "pending",
+            "created_at": datetime.now(TIMEZONE).isoformat(),
+            "reasoning": f"Selected by user from top options. Score: {selected_slot.get('ranking_score')}",
             "iteration_count": 1
         }
         

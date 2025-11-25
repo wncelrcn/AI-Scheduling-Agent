@@ -38,6 +38,7 @@ class ChatRequest(BaseModel):
     username: str
     history: List[Message] = []
     participants: List[str] = []
+    priority_participants: List[str] = []
     # Previous agent state (optional, for state persistence)
     previous_state: Optional[Dict[str, Any]] = None
 
@@ -80,6 +81,7 @@ async def chat_endpoint(request: ChatRequest):
                 "messages": langchain_messages,
                 "organizer_id": request.username,
                 "participant_ids": request.participants,
+                "priority_participant_ids": request.priority_participants,
                 # Preserve these from previous turn (agent will decide whether to use them)
                 "extracted_info": request.previous_state.get("extracted_info"),
                 "all_calendars": request.previous_state.get("all_calendars", {}),
@@ -99,6 +101,7 @@ async def chat_endpoint(request: ChatRequest):
                 "messages": langchain_messages,
                 "organizer_id": request.username,
                 "participant_ids": request.participants,
+                "priority_participant_ids": request.priority_participants,
                 "extracted_info": None,
                 "all_calendars": {},
                 "all_working_hours": {},

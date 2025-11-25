@@ -42,6 +42,10 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
     proposalId: null,
   });
   const [rejectReason, setRejectReason] = useState("");
+  const [confirmationDialog, setConfirmationDialog] = useState({
+    open: false,
+    meetingData: null,
+  });
 
   const supabase = createClient();
 
@@ -67,8 +71,10 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
             meeting_title,
             proposed_start,
             proposed_end,
+            proposed_end,
             organizer_id,
-            reasoning
+            reasoning,
+            priority_participants
           )
         `
         )
@@ -226,44 +232,77 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
   const handlePushThrough = async (proposal) => {
     setIsLoading(true);
     try {
-      const response = await fetch("http://localhost:8000/api/finalize_meeting", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          proposal_id: proposal.proposal_id,
-        }),
-      });
+      const response = await fetch(
+        "http://localhost:8000/api/finalize_meeting",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            proposal_id: proposal.proposal_id,
+          }),
+        }
+      );
 
       if (!response.ok) {
         throw new Error("Failed to finalize meeting");
       }
-      
+
       const data = await response.json();
-      alert(`Meeting confirmed with ${data.attendees.length} attendees!`);
+
+      // Show confirmation modal instead of alert
+      setConfirmationDialog({
+        open: true,
+        meetingData: {
+          title: proposal.meeting_title,
+          attendees: data.attendees || [],
+          start: proposal.proposed_start,
+          end: proposal.proposed_end,
+        },
+      });
 
       // Refresh to show updated status
       fetchProposals();
     } catch (error) {
       console.error("Error finalizing meeting:", error);
-      alert("Failed to finalize meeting. Please try again.");
+      // Show error in confirmation dialog
+      setConfirmationDialog({
+        open: true,
+        meetingData: {
+          error: true,
+          message: "Failed to finalize meeting. Please try again.",
+        },
+      });
     } finally {
       setIsLoading(false);
     }
   };
 
-  const calculateMajority = (responses) => {
+  const calculateMajority = (responses, priorityParticipants = []) => {
     if (!responses || responses.length === 0) return false;
+
+    // Check if any priority participant has rejected
+    const priorityRejection = responses.some(
+      (r) =>
+        r.response === "rejected" &&
+        priorityParticipants &&
+        priorityParticipants.includes(r.participant_id)
+    );
+
+    if (priorityRejection) return false;
+
     const totalParticipants = responses.length;
-    const acceptedParticipants = responses.filter((r) => r.response === "accepted").length;
-    
+    const acceptedParticipants = responses.filter(
+      (r) => r.response === "accepted"
+    ).length;
+
     // Total people involved = Participants + Organizer (1)
     const totalPeople = totalParticipants + 1;
-    
+
     // Total accepted = Accepted Participants + Organizer (1)
     const totalAccepted = acceptedParticipants + 1;
-    
+
     // Majority is > 50%
     return totalAccepted > totalPeople / 2;
   };
@@ -383,84 +422,138 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
 
           <div className="flex-1 overflow-y-auto bg-muted/30 p-6">
             {activeTab === "incoming" && (
-              <div className="space-y-4">
+              <div className="space-y-5">
                 {incomingProposals.length === 0 ? (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <p>No incoming meeting requests.</p>
+                  <div className="flex flex-col items-center justify-center py-16 px-4">
+                    <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+                      <CalendarIcon className="w-10 h-10 text-primary/40" />
+                    </div>
+                    <h3 className="text-lg font-semibold text-foreground mb-2">
+                      All caught up!
+                    </h3>
+                    <p className="text-sm text-muted-foreground text-center max-w-sm">
+                      No incoming meeting requests at the moment. You'll see new
+                      invitations here.
+                    </p>
                   </div>
                 ) : (
                   incomingProposals.map((proposal) => (
                     <Card
                       key={proposal.proposal_id}
-                      className="overflow-hidden border-l-4 border-l-primary"
+                      className={cn(
+                        "group relative overflow-hidden transition-all duration-200 hover:shadow-lg border-l-4",
+                        proposal.my_status === "pending"
+                          ? "border-l-blue-500 bg-gradient-to-r from-blue-50/50 via-background to-background dark:from-blue-950/20 dark:via-background dark:to-background"
+                          : proposal.my_status === "accepted"
+                          ? "border-l-green-500 bg-gradient-to-r from-green-50/30 via-background to-background dark:from-green-950/20 dark:via-background dark:to-background"
+                          : "border-l-muted"
+                      )}
                     >
-                      <CardHeader className="pb-3">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <CardTitle className="text-lg">
+                      <CardHeader className="pb-4 space-y-3">
+                        <div className="flex justify-between items-start gap-4">
+                          <div className="flex-1 min-w-0">
+                            <CardTitle className="text-xl font-bold tracking-tight mb-1.5 flex items-center gap-2">
                               {proposal.meeting_title || "Untitled Meeting"}
+                              {proposal.my_status === "pending" && (
+                                <span className="relative flex h-2 w-2">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                                </span>
+                              )}
                             </CardTitle>
-                            <CardDescription>
-                              Organized by {proposal.organizer_id}
-                            </CardDescription>
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <Users className="w-3.5 h-3.5" />
+                              <span>
+                                Organized by{" "}
+                                <span className="font-medium text-foreground">
+                                  {proposal.organizer_id}
+                                </span>
+                              </span>
+                            </div>
                           </div>
                           <Badge
                             variant={getStatusBadgeVariant(proposal.my_status)}
                             className={cn(
-                              "capitalize",
-                              getStatusColorClass(proposal.my_status)
+                              "capitalize font-semibold px-3 py-1.5 text-xs shrink-0",
+                              proposal.my_status === "accepted" &&
+                                "bg-green-500/90 hover:bg-green-500 text-white border-green-600",
+                              proposal.my_status === "pending" &&
+                                "bg-blue-500/90 hover:bg-blue-500 text-white border-blue-600 animate-pulse"
                             )}
                           >
+                            {proposal.my_status === "accepted" && (
+                              <CheckCircle2 className="w-3 h-3 mr-1 inline" />
+                            )}
+                            {proposal.my_status === "pending" && (
+                              <Clock className="w-3 h-3 mr-1 inline" />
+                            )}
                             {formatStatus(proposal.my_status)}
                           </Badge>
                         </div>
                       </CardHeader>
-                      <CardContent className="pb-3 text-sm grid gap-2">
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <CalendarIcon className="w-4 h-4" />
-                          <span>
-                            {formatDate(proposal.proposed_start)} -{" "}
-                            {formatDate(proposal.proposed_end)}
-                          </span>
-                        </div>
-                        {proposal.reasoning && (
-                          <div className="bg-muted p-3 rounded-md text-sm mt-2 flex gap-2">
-                            <AlertCircle className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
-                            <div>
-                              <span className="font-semibold block text-xs uppercase tracking-wider text-muted-foreground mb-1">
-                                Organizer Reasoning
-                              </span>
-                              {proposal.reasoning}
+
+                      <CardContent className="pb-4">
+                        <div className="rounded-lg bg-muted/50 p-4 border border-border/50">
+                          <div className="flex items-start gap-3">
+                            <div className="rounded-md bg-primary/10 p-2 shrink-0">
+                              <CalendarIcon className="w-5 h-5 text-primary" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
+                                Scheduled Time
+                              </p>
+                              <p className="text-sm font-semibold text-foreground leading-relaxed">
+                                {formatDate(proposal.proposed_start)}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                Until {formatDate(proposal.proposed_end)}
+                              </p>
                             </div>
                           </div>
-                        )}
+                        </div>
                       </CardContent>
-                      <CardFooter className="bg-muted/50 p-3 flex justify-end gap-2">
-                        {proposal.my_status === "pending" && (
-                          <>
+
+                      <CardFooter
+                        className={cn(
+                          "border-t p-4 transition-colors",
+                          proposal.my_status === "pending"
+                            ? "bg-muted/30"
+                            : "bg-muted/20"
+                        )}
+                      >
+                        {proposal.my_status === "pending" ? (
+                          <div className="flex gap-3 w-full">
                             <Button
                               variant="outline"
-                              size="sm"
+                              size="default"
                               onClick={() =>
                                 handleRejectClick(proposal.proposal_id)
                               }
-                              className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/20"
+                              className="flex-1 text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200 hover:border-rose-300 dark:hover:bg-rose-950/20 dark:border-rose-900 transition-all duration-200 font-semibold"
                             >
-                              Reject / Negotiate
+                              <XCircle className="w-4 h-4 mr-2" />
+                              Decline
                             </Button>
                             <Button
-                              size="sm"
+                              size="default"
                               onClick={() => handleAccept(proposal.proposal_id)}
-                              className="bg-green-600 hover:bg-green-700"
+                              className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white shadow-md hover:shadow-lg transition-all duration-200 font-semibold"
                             >
-                              Accept
+                              <CheckCircle2 className="w-4 h-4 mr-2" />
+                              Accept Meeting
                             </Button>
-                          </>
-                        )}
-                        {proposal.my_status !== "pending" && (
-                          <span className="text-xs text-muted-foreground italic">
-                            You have {proposal.my_status} this proposal.
-                          </span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 text-sm w-full">
+                            {proposal.my_status === "accepted" && (
+                              <div className="flex items-center gap-2 text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30 px-3 py-2 rounded-md w-full">
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span className="font-medium">
+                                  You accepted this meeting
+                                </span>
+                              </div>
+                            )}
+                          </div>
                         )}
                       </CardFooter>
                     </Card>
@@ -551,36 +644,56 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
                           {/* Re-generate Schedule Button if any rejection */}
                           {proposal.participant_responses?.some(
                             (r) => r.response === "rejected"
-                          ) && proposal.status === "pending" && (
-                            <div className="pt-2 flex flex-wrap gap-2">
-                              <Button
-                                className="w-full sm:w-auto gap-2"
-                                variant="secondary"
-                                onClick={() => handleReschedule(proposal)}
-                                disabled={isLoading}
-                              >
-                                <RefreshCcw
-                                  className={cn(
-                                    "w-4 h-4",
-                                    isLoading && "animate-spin"
-                                  )}
-                                />
-                                Re-generate Schedule
-                              </Button>
-                              
-                              {calculateMajority(proposal.participant_responses) && (
+                          ) &&
+                            proposal.status === "pending" && (
+                              <div className="pt-2 flex flex-wrap gap-2">
                                 <Button
-                                  className="w-full sm:w-auto gap-2 bg-orange-500 hover:bg-orange-600 text-white"
-                                  variant="default"
-                                  onClick={() => handlePushThrough(proposal)}
+                                  className="w-full sm:w-auto gap-2"
+                                  variant="secondary"
+                                  onClick={() => handleReschedule(proposal)}
                                   disabled={isLoading}
                                 >
-                                  <Users className="w-4 h-4" />
-                                  Push Through (Majority Accepted)
+                                  <RefreshCcw
+                                    className={cn(
+                                      "w-4 h-4",
+                                      isLoading && "animate-spin"
+                                    )}
+                                  />
+                                  Re-generate Schedule
                                 </Button>
-                              )}
-                            </div>
-                          )}
+
+                                {calculateMajority(
+                                  proposal.participant_responses,
+                                  proposal.priority_participants
+                                ) ? (
+                                  <Button
+                                    className="w-full sm:w-auto gap-2 bg-orange-500 hover:bg-orange-600 text-white"
+                                    variant="default"
+                                    onClick={() => handlePushThrough(proposal)}
+                                    disabled={isLoading}
+                                  >
+                                    <Users className="w-4 h-4" />
+                                    Push Through (Majority Accepted)
+                                  </Button>
+                                ) : (
+                                  proposal.participant_responses?.some(
+                                    (r) =>
+                                      r.response === "rejected" &&
+                                      proposal.priority_participants?.includes(
+                                        r.participant_id
+                                      )
+                                  ) && (
+                                    <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded border border-destructive/20">
+                                      <AlertCircle className="w-4 h-4" />
+                                      <span>
+                                        Cannot push through: Priority
+                                        participant rejected.
+                                      </span>
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            )}
                         </div>
                       </CardContent>
                     </Card>
@@ -630,6 +743,117 @@ export function MeetingAlerts({ isOpen, onClose, username }) {
               Send Response
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Meeting Confirmation Dialog */}
+      <Dialog
+        open={confirmationDialog.open}
+        onOpenChange={(open) =>
+          !open && setConfirmationDialog({ open: false, meetingData: null })
+        }
+      >
+        <DialogContent className="sm:max-w-md">
+          {confirmationDialog.meetingData?.error ? (
+            <>
+              <DialogHeader>
+                <div className="flex items-center justify-center w-16 h-16 mx-auto mb-4 rounded-full bg-destructive/10">
+                  <XCircle className="w-8 h-8 text-destructive" />
+                </div>
+                <DialogTitle className="text-center text-xl">
+                  Failed to Finalize Meeting
+                </DialogTitle>
+                <DialogDescription className="text-center">
+                  {confirmationDialog.meetingData.message}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="sm:justify-center">
+                <Button
+                  onClick={() =>
+                    setConfirmationDialog({ open: false, meetingData: null })
+                  }
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <div className="flex items-center justify-center w-16 h-16 mx-auto mb-4 rounded-full bg-green-100 dark:bg-green-950">
+                  <CheckCircle2 className="w-8 h-8 text-green-600 dark:text-green-400" />
+                </div>
+                <DialogTitle className="text-center text-xl">
+                  Meeting Confirmed! 🎉
+                </DialogTitle>
+                <DialogDescription className="text-center">
+                  The meeting has been successfully scheduled.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4 py-4">
+                {/* Meeting Title */}
+                <div className="bg-muted/50 rounded-lg p-4 border">
+                  <h3 className="font-semibold text-sm text-muted-foreground mb-1">
+                    Meeting
+                  </h3>
+                  <p className="text-base font-medium">
+                    {confirmationDialog.meetingData?.title ||
+                      "Untitled Meeting"}
+                  </p>
+                </div>
+
+                {/* Time */}
+                <div className="bg-muted/50 rounded-lg p-4 border">
+                  <div className="flex items-center gap-2 mb-2">
+                    <CalendarIcon className="w-4 h-4 text-primary" />
+                    <h3 className="font-semibold text-sm text-muted-foreground">
+                      Scheduled Time
+                    </h3>
+                  </div>
+                  <p className="text-sm">
+                    {confirmationDialog.meetingData?.start &&
+                      formatDateRange(
+                        confirmationDialog.meetingData.start,
+                        confirmationDialog.meetingData.end
+                      )}
+                  </p>
+                </div>
+
+                {/* Attendees */}
+                <div className="bg-muted/50 rounded-lg p-4 border">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Users className="w-4 h-4 text-primary" />
+                    <h3 className="font-semibold text-sm text-muted-foreground">
+                      Confirmed Attendees
+                    </h3>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant="secondary"
+                      className="text-base font-semibold"
+                    >
+                      {confirmationDialog.meetingData?.attendees?.length || 0}
+                    </Badge>
+                    <span className="text-sm text-muted-foreground">
+                      participants confirmed
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <DialogFooter className="sm:justify-center">
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={() =>
+                    setConfirmationDialog({ open: false, meetingData: null })
+                  }
+                >
+                  Got it, thanks!
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </Dialog>
