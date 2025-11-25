@@ -13,9 +13,8 @@ export function CalendarDay({ date, isCurrentMonth, isToday, events = [], classN
   const maxVisibleEvents = 3;
   const hasMoreEvents = events.length > maxVisibleEvents;
   
-  // If there are more than maxVisibleEvents, show (maxVisibleEvents - 1) items plus the "+X more" item.
-  // Otherwise, show all items (up to maxVisibleEvents).
-  const displayLimit = hasMoreEvents ? maxVisibleEvents - 1 : maxVisibleEvents;
+  // Show maxVisibleEvents items, and if there are more, add the "+X more" item below
+  const displayLimit = maxVisibleEvents;
   const visibleEvents = events.slice(0, displayLimit);
 
   const EventItem = ({ event, isCompact = true }) => (
